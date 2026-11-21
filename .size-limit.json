@@ -1,0 +1,53 @@
+[
+  {
+    "name": "Entry Bundle (dist/assets/index-*.js)",
+    "path": "dist/assets/index-*.js",
+    "limit": "200 kB"
+  },
+  {
+    "name": "React 19 Vendor (dist/assets/react-vendor-*.js)",
+    "path": "dist/assets/react-vendor-*.js",
+    "limit": "120 kB"
+  },
+  {
+    "name": "Motion Vendor (dist/assets/motion-vendor-*.js)",
+    "path": "dist/assets/motion-vendor-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "State Vendor (dist/assets/state-vendor-*.js)",
+    "path": "dist/assets/state-vendor-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "Feature: AndroidAnalysisHub",
+    "path": "dist/assets/AndroidAnalysisHub-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "Feature: ExportModal",
+    "path": "dist/assets/ExportModal-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "Feature: LSystemModal",
+    "path": "dist/assets/LSystemModal-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "Feature: WebGL2 Lens Pass",
+    "path": "dist/assets/lensWebglPass-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "Feature: WASM Runtime",
+    "path": "dist/assets/wasm-runtime-*.js",
+    "limit": "100 kB"
+  },
+  {
+    "name": "WASM Binary (public/wasm/mandala_symmetry.wasm raw)",
+    "path": "public/wasm/mandala_symmetry.wasm",
+    "gzip": false,
+    "limit": "200 kB"
+  }
+]

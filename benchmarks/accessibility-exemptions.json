@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "standard": "WCAG 2.1 Level A & AA",
+  "exemptions": [
+    {
+      "ruleId": "color-contrast",
+      "scope": ".mandala-decorative-badge-optional",
+      "owner": "UI Accessibility Guild",
+      "reason": "Reserved expiring placeholder selector strictly scoped to decorative non-interactive guide captions; all primary text and controls enforce >= 4.5:1.",
+      "expiresAt": "2027-03-01"
+    }
+  ]
+}

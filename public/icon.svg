@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#090d16"/>
+  <circle cx="256" cy="256" r="190" fill="none" stroke="#1e293b" stroke-width="4"/>
+  <g transform="translate(256,256)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle r="154" stroke="#38bdf8" stroke-width="8" stroke-dasharray="16 14" opacity="0.7"/>
+    <circle r="108" stroke="#56B4E9" stroke-width="6"/>
+    <circle r="54" stroke="#E69F00" stroke-width="6"/>
+    <g stroke="#38bdf8" stroke-width="7">
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(45)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(90)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(135)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(180)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(225)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(270)"/>
+      <path d="M0,-168 C42,-112 42,-56 0,0 C-42,-56 -42,-112 0,-168 Z" transform="rotate(315)"/>
+    </g>
+    <circle r="14" fill="#F0E442"/>
+  </g>
+</svg>

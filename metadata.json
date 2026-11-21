@@ -1,0 +1,6 @@
+{
+  "name": "Mandala Studio — Android & Web Creation Engine",
+  "description": "Analisi tecnica strategica ed engine interattivo professionale per la creazione di mandala con simmetrie radiali, speculari e frattali per Android e Web.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

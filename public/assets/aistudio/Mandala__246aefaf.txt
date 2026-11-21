@@ -1,0 +1,2046 @@
+﻿Phase 1 — Preliminary Analysis and Strategic Roadmap
+
+
+Document ID: MANDALA-PH1-STRAT-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Draft for Review
+
+
+---
+
+
+1. Executive Summary
+
+
+This document establishes the analytical and strategic foundation for a browser-based mandala creation application built with React, WebAssembly, and modern web platform capabilities. The application operates entirely client-side with no API-key dependency, prioritising performance, accessibility, and creative depth.
+
+
+The strategic conclusion is unambiguous: the application should be architected as a performance-tiered system in which React governs declarative interface state, WebAssembly handles compute-intensive radial symmetry and geometry generation, and the Canvas API (via react-konva or a controlled imperative surface) renders the visual output. The WebAssembly layer must be introduced selectively and lazily, governed by a measured performance threshold, not as a default architectural garnish. Accessibility and offline capability are treated as first-class requirements, not post-launch refinements.
+
+
+The roadmap comprises five sequential development phases, each containing two to three sprints. This document delivers Phase 1 in full (analysis, architecture, strategic decisions). Phases 2 through 5 are specified at the planning level here and will be expanded into executable sprint-level documents in subsequent communications.
+
+
+---
+
+
+2. Scope and Domain Analysis
+
+
+2.1 What the Application Must Do
+
+
+The application enables users to create mandala designs through radial symmetry. A mandala, in computational terms, is the repeated application of a geometric transform (rotation, reflection, or both) to a base element around a centre point. The visual output is a function of:
+
+
+· the symmetry order (N-fold radial repetition);
+· the base geometry (points, strokes, filled shapes, imported paths);
+· the colour model (palette, opacity, blend behaviour);
+· the transformation strategy (pure rotation, mirrored rotation, fractal recursion).
+
+
+The application must support drawing and generation as complementary modalities. Drawing gives the user direct control; generation (procedural or algorithmic) provides creative acceleration. Both feed the same render pipeline.
+
+
+2.2 What the Application Must Not Do (Constraint Surface)
+
+
+· No server-side dependency for core function. The application must render and export mandalas without network access after initial load. This eliminates any architecture that requires a backend for symmetry computation or image generation.
+· No opaque "black box" AI generation. The absence of an API key is not a temporary limitation but a design stance: the application produces deterministic, inspectable geometry. Future AI integration (should a key become available) would be an optional augment, never a core dependency.
+· No pixel-only output without semantic fallback. A canvas that exposes nothing to assistive technology is an accessibility failure, not a rendering choice. The application must expose a parallel, non-visual representation of its output.
+
+
+2.3 Domain Vocabulary for the Team
+
+
+Term Definition
+Symmetry order (N) Number of rotational repetitions around the centre. N=8 produces eight identical wedges.
+Wedge The fundamental geometric unit that is transformed and repeated.
+Radial strategy The algorithm that maps the wedge to its N positions (rotation, mirror-rotation, spiral offset).
+Guide layer Non-exported visual aids (radial spokes, centre marks, ring boundaries) rendered as DOM overlays, never burned into the export.
+Export surface The canvas or SVG serialisation used for output; distinct from the interactive render surface.
+
+
+---
+
+
+3. Architecture: Strategic Decisions and Justification
+
+
+3.1 Rendering Strategy — Decision
+
+
+Decision: React-Konva as the primary interactive canvas layer, with a controlled imperative escape hatch for high-object-count scenarios.
+
+
+The team evaluated three rendering paths:
+
+
+Path Strength Weakness Verdict
+React-Konva Declarative component model, event handling, layer management, batchDraw batching Per-node overhead on very large scenes; hit-detection cost Adopt for interactive layer
+p5.js (via react-p5 or @shopify/klint) Immediate-mode creative coding, low ceremony for generative sketches Less React-idiomatic; state synchronisation requires manual bridging Reserve for prototyping and generative exploration
+Raw Canvas imperative Maximum control, no abstraction cost Event handling, layering, and hit detection must be rebuilt Use only inside the WASM rendering boundary or for export
+
+
+React-Konva's performance profile is acceptable provided the team applies its optimisation discipline: FastLayer for static elements, React.memo on shape components, and grouping of related property changes within a single render cycle. The published optimisation data shows frame times dropping from 120–200 ms to 8–16 ms after these measures on scenes of 500 shapes — a 92–93% improvement. The architecture must bake these patterns in from Sprint 2, not retrofit them.
+
+
+The "pixel" imperative escape hatch exists for one scenario: when the symmetry order and stroke count combine to produce object counts that exceed React-Konva's comfortable range. The WASM module will expose a render_to_buffer path that writes directly to a pixel buffer, which is then blitted to the canvas. React-Konva remains the default; the imperative path is activated only when the object count crosses a measured threshold (to be established during Sprint 3 benchmarking).
+
+
+3.2 WebAssembly Strategy — Decision
+
+
+Decision: Rust → WASM via wasm-pack --target web, loaded lazily inside a persistent Web Worker, with a hard performance gate for adoption.
+
+
+The critical architectural rule, drawn directly from production experience: WASM is adopted where the operation consistently exceeds approximately 50 ms on typical devices, and rejected where it falls below approximately 10 ms. The 10–50 ms band is a profiling grey area. This rule prevents the single most common WASM anti-pattern: shipping a multi-megabyte runtime to accelerate operations that JavaScript already completes in single-digit milliseconds.
+
+
+The concrete WASM candidates for this application are:
+
+
+1. Radial symmetry expansion at high N with dense wedges. When N ≥ 24 and the wedge contains complex paths, the coordinate transformation and duplication cost is CPU-bound and benefits from compiled execution.
+2. Fractal recursion (if an L-system or iterated-function-system feature is introduced in Phase 4). Recursive generation is compute-heavy and maps cleanly to Rust.
+3. Pixel-buffer rendering for the escape-hatch path and for export at high resolution (e.g., 4096 × 4096 PNG), where per-pixel operations dominate.
+
+
+The concrete non-candidates are:
+
+
+· UI event handling (must remain in React's main-thread event system).
+· Small geometric transforms at low N (boundary-crossing overhead dominates).
+· Colour palette computation (trivial arithmetic in JavaScript).
+
+
+Runtime pattern. The WASM module is not part of the critical bundle. It is lazy-loaded — via dynamic import() or React 19's use() within a Suspense boundary — only when the user first requests an operation that qualifies for WASM execution. Instantiation occurs inside a persistent Web Worker, not on the main thread. This achieves three objectives simultaneously: it keeps the main bundle small, it prevents main-thread jank during long WASM runs, and it amortises instantiation cost across multiple jobs.
+
+
+Buffer transfer. Results return to the main thread as transferable ArrayBuffer objects, achieving zero-copy postMessage semantics. For operations requiring shared state (future multi-threaded WASM with SharedArrayBuffer), the application must serve COOP/COEP headers; this is noted as a deployment constraint but is not a Phase 1–2 requirement.
+
+
+Build hygiene. The WASM binary is produced with wasm-pack build --target web --release, served with Content-Type: application/wasm (required for instantiateStreaming), and post-processed with wasm-opt -Oz for size reduction. Rust compilation profile includes lto = true and tuned codegen-units.
+
+
+3.3 The Component Model Question — Decision
+
+
+Decision: wasm-bindgen for all Phase 1–5 work; WebAssembly Component Model is monitored but not adopted.
+
+
+The WebAssembly Component Model (WCM) and WASI 0.3 introduce composable, language-agnostic module interfaces and isolated plugin memories. They are architecturally attractive for a future "plugin" model where third-party symmetry strategies could be loaded at runtime. However, browser-native support for WCM is not yet available, and the recommended toolchain for browser projects in the current period remains wasm-bindgen. Adopting WCM now would introduce toolchain friction without browser delivery. The architecture should be designed so that symmetry strategies are interface-separated (see Section 3.5), making a future WCM migration a contained refactor rather than a rewrite.
+
+
+3.4 State Architecture — Decision
+
+
+Decision: Zustand for global mandala state, useReducer for intra-component state, React Context strictly for dependency injection (not for high-frequency state).
+
+
+The mandala's global state (symmetry order, active palette, stroke width, current tool, layer ordering) is shared across spatially distant components (toolbar, canvas, side panel). Zustand provides selector-based subscriptions that prevent cascading re-renders — a critical property when the canvas re-renders at interactive frame rates and the UI must not re-render in lockstep. The reducer pattern inside Zustand actions (ADD_STROKE, SET_SYMMETRY, UNDO, REDO) keeps state transitions predictable and unit-testable without a rendering harness.
+
+
+Canvas-side state (in-progress stroke points, pointer position) remains local to the canvas component and is never lifted into global state until a stroke is committed. This is the "lift content up, push state down" principle applied concretely.
+
+
+3.5 Symmetry Strategy — Interface Design
+
+
+The symmetry engine is designed as a Strategy Pattern with a stable interface, regardless of whether a given strategy is implemented in JavaScript or WASM:
+
+
+```
+interface SymmetryStrategy {
+  readonly id: string;                    // "radial" | "mirror-radial" | "spiral" | "fractal"
+  readonly minWedgeComplexity: number;    // threshold above which WASM path is preferred
+  expand(wedge: Geometry, order: number, params: StrategyParams): Geometry[];
+}
+```
+
+
+Each strategy declares its own WASM-benefit threshold. The orchestrator (a Zustand action or a dedicated hook) routes the expansion call to the JavaScript implementation or the WASM implementation based on the wedge complexity and the measured threshold. This decouples the strategy's mathematical definition from its execution environment and satisfies the "interface-separated" requirement stated in Section 3.3.
+
+
+The radial expansion itself is mathematically trivial — precompute the rotation angles once from 2π/N, apply cos/sin transforms per wedge — but the performance insight is that symmetry should be exploited in the algorithm: for certain hit-testing and proximity queries, evaluating a single wedge and inferring results across all N wedges yields approximately 4× speedup. The strategy interface must permit this optimisation without exposing it to callers.
+
+
+---
+
+
+4. Accessibility: First-Class Requirement
+
+
+4.1 The Canvas Accessibility Problem
+
+
+A <canvas> element exposes nothing to screen readers, search engines, translation tools, or accessibility APIs — the pixels are opaque to assistive technology. This is not a rendering inconvenience; it is a categorical failure of the application's content to exist for a significant population of users. The architecture must treat the canvas as a visual presentation layer with a mandatory parallel semantic representation.
+
+
+4.2 Mandatory Accessibility Mechanisms
+
+
+Fallback DOM content. The <canvas> element must contain meaningful fallback content — not "Your browser does not support canvas," but a structural description of the current mandala state. For a mandala, the semantically meaningful representation is the parametric description: symmetry order, active strategy, stroke count, dominant colours, and layer structure. This fallback content is kept synchronised with the visual state via a Zustand subscription, updated on a throttled schedule (not per frame).
+
+
+ARIA live region. A visually hidden (sr-only) live region announces significant state changes: "Symmetry changed to 12-fold," "Stroke added to inner ring," "Palette changed to colourblind-safe." The announcements are debounced to prevent auditory flooding during continuous drawing interactions.
+
+
+Keyboard operability. Every interactive control — symmetry slider, palette selector, tool toggle, export trigger — must be operable by keyboard alone. The canvas itself, if it supports direct point placement, must accept keyboard-driven point specification (arrow keys to move a cursor, Enter to commit) as an alternative to pointer input.
+
+
+HTML-in-Canvas (forward-looking). The emerging content="drawable" attribute on <canvas> allows real DOM elements to be rendered into the canvas while remaining exposed to the accessibility tree. This is not adopted in Phase 1–3 (browser support is insufficient), but the architecture should avoid decisions that would foreclose it. The team is instructed to keep the DOM structure of controls separate from the canvas surface so that a future adoption is additive, not disruptive.
+
+
+4.3 Colour Accessibility
+
+
+The default palette set must include the Okabe-Ito colourblind-safe palette as a first-class option, alongside standard palettes. The Okabe-Ito values are established and copy-ready:
+
+
+Colour HEX
+Black #000000
+Orange #E69F00
+Sky Blue #56B4E9
+Bluish Green #009E73
+Yellow #F0E442
+Blue #0072B2
+Vermillion #D55E00
+Reddish Purple #CC79A7
+
+
+The palette is empirically selected for distinguishability across common colour-vision deficiencies and is free to use under Color Universal Design. The application must not rely on colour alone to convey structural information: stroke style (solid/dashed/dotted) and stroke width must be independently adjustable, so that a mandala remains legible in grayscale print and to users with monochromatic vision.
+
+
+---
+
+
+5. Performance, Offline Capability, and Delivery
+
+
+5.1 The Performance Contract
+
+
+The application must sustain interactive drawing at ≥ 50 fps on mid-tier hardware (the benchmark device class is a 2022-era laptop with integrated graphics). When this target cannot be met — specifically when object count or stroke density crosses the measured threshold — the application must degrade gracefully: the in-progress stroke renders at full fidelity, while committed content renders at reduced fidelity until the interaction ends. This is a scheduling decision (prioritise the user's current action), not a quality concession.
+
+
+5.2 Progressive Web App and WASM Caching
+
+
+The application is delivered as a Progressive Web App with offline-first semantics. The WASM binary is the most consequential asset to cache: it is large (typically 1–3 MB), it is immutable per build (content-hashed filename), and the application's core generation features depend on it.
+
+
+The caching strategy is non-negotiable:
+
+
+· WASM binary → Cache-first. Immutable, content-hashed, served with original headers intact so the browser's compiled-code cache is not defeated.
+· HTML → Network-first. Freshness matters for application shell updates.
+· JS/CSS → Stale-while-revalidate. Instant load, background refresh.
+
+
+The implementation uses Workbox for correctness and maintainability. vite-plugin-pwa provides the integration surface. The service worker is registered in the application entry point, and an "Update available — reload" banner is exposed when a new build is detected.
+
+
+5.3 Bundle Discipline
+
+
+The WASM runtime is excluded from the critical path. The main bundle contains React, the UI layer, and the JavaScript symmetry implementation for the common (low-complexity) case. The WASM loader and worker script are separate chunks, fetched only when the first high-complexity operation is requested. The team is instructed to monitor bundle composition in CI and to fail the build if the initial JS payload exceeds a threshold (to be set in Sprint 1, provisionally 250 KB gzipped excluding React).
+
+
+---
+
+
+6. Security and Supply Chain
+
+
+WASM executes in a browser sandbox, which constrains memory-corruption impact to the module's linear memory. Nevertheless, the following controls are mandatory:
+
+
+· Content Security Policy restricting script-src to the application origin and worker-src to self, explicitly allowing wasm-unsafe-eval only where required for the WASM module.
+· wasm-opt and wasm-bindgen pinned versions in CI; no floating major versions for build-critical Rust toolchain components.
+· Dependency review for npm packages that touch canvas, wasm loading, or service-worker generation. The surface is small (react-konva, zustand, workbox, vite-plugin-pwa, shadcn/radix primitives) and every addition requires justification against the "does this remove a dependency?" test.
+
+
+---
+
+
+7. Testing Strategy (Architectural Placement)
+
+
+Testing is not deferred to Phase 5; its structure is established in Phase 1 so that implementation sprints write tests against a known harness.
+
+
+Layer Tool What It Tests
+Rust core cargo test Symmetry mathematics, geometry, memory safety of the WASM boundary
+WASM JavaScript boundary Vitest (Node + Browser mode) String encoding, buffer lifetimes, initialisation ordering, error propagation across the boundary
+React state and logic Vitest + jsdom Zustand reducers, strategy routing, export orchestration
+Canvas rendering Vitest Browser Mode + Playwright Actual pixel output, canvas event handling, device-pixel-ratio scaling
+Accessibility Automated (axe) + manual screen-reader pass ARIA announcements, keyboard operability, fallback content presence
+
+
+The critical insight from the research is that jsdom cannot test real canvas rendering — fillRect() calls can be asserted, but the resulting pixels cannot be verified. Canvas rendering tests therefore run in Vitest's Browser Mode, which executes the same test files in a real browser engine. The team is instructed to maintain a clean separation: jsdom for logic and state, Browser Mode for anything that touches a rendering context.
+
+
+---
+
+
+8. Five-Phase Development Roadmap
+
+
+The following roadmap specifies Phases 1–5 at the planning level. Each subsequent communication will deliver the executable sprint-level breakdown for the next phase.
+
+
+Phase 1 — Foundation and Strategic Alignment (This Document)
+
+
+Objective: Establish architecture, make irreversible technology decisions with justification, define the testing and accessibility contracts, and produce the initial project scaffold specification.
+
+
+Deliverables: This document; architecture decision records (ADRs) for rendering, WASM, state, and accessibility; project structure specification; CI gate definitions.
+
+
+Exit criteria: Team consensus on the four ADRs; scaffold repository created with the specified directory structure and build pipeline.
+
+
+---
+
+
+Phase 2 — Core Rendering Engine (Sprints 2.1–2.3)
+
+
+Objective: Deliver a working mandala canvas with JavaScript-based radial symmetry, interactive stroke input, guide layers, and the first export path.
+
+
+Sprint 2.1 — Canvas surface and symmetry primitives. React-Konva stage, layer architecture (Layer for dynamic content, FastLayer for static guides), pointer capture, the SymmetryStrategy interface with a JavaScript RadialStrategy, and the first N-fold expansion. Guide overlay as DOM, never in the render tree.
+
+
+Sprint 2.2 — Interaction and state. Zustand store with reducer actions, undo/redo via command pattern (not snapshot cloning at this stage), tool selection (stroke, point, erase-within-wedge), and the compound-component pattern for control panels.
+
+
+Sprint 2.3 — Export and palette. PNG export via toDataURL on a dedicated export surface (not the interactive canvas), SVG serialisation of the geometry model, Okabe-Ito palette as a first-class option, stroke-style independence from colour.
+
+
+Exit criteria: A user can draw a wedge, see it expand to N-fold symmetry, change palette, and export PNG and SVG. Interaction sustains ≥ 50 fps at N=8 with ≤ 50 wedge points on the benchmark device.
+
+
+---
+
+
+Phase 3 — WASM Integration and Performance Hardening (Sprints 3.1–3.2)
+
+
+Objective: Introduce Rust/WASM for the qualified compute paths, validate the performance gate empirically, and harden the rendering pipeline against high-complexity scenes.
+
+
+Sprint 3.1 — Rust symmetry core and worker harness. Implement RadialStrategy in Rust with the same interface semantics as the JavaScript implementation. wasm-pack build pipeline, persistent Web Worker, transferable-buffer protocol. The JavaScript implementation remains the default; the WASM path is activated by a feature flag and benchmarked against the JavaScript baseline.
+
+
+Sprint 3.2 — Performance gate calibration and escape hatch. Execute the benchmark matrix (N ∈ {8, 12, 24, 36, 48}, wedge complexity ∈ {low, medium, high}). Record where WASM wins, where it loses, and where the difference is within noise. Set the minWedgeComplexity threshold per strategy from measured data. Implement the pixel-buffer escape hatch for the high-complexity corner of the matrix.
+
+
+Exit criteria: Measured, documented performance data; WASM path activated only where justified; escape hatch functional at N=48 with dense wedges.
+
+
+---
+
+
+Phase 4 — Creative Expansion and Accessibility Completion (Sprints 4.1–4.2)
+
+
+Objective: Add the second symmetry strategy (mirror-radial) and the procedural generation layer (L-systems or string-art), complete the accessibility surface, and deliver the PWA shell.
+
+
+Sprint 4.1 — Mirror-radial and generative strategies. The Strategy Pattern pays its debt: MirrorRadialStrategy and FractalStrategy (L-system based) are added without modifying the orchestrator. The compound-component API for controls extends to strategy-specific parameters.
+
+
+Sprint 4.2 — Accessibility completion and PWA. ARIA live region with debounced announcements, keyboard point-placement mode, synchronised fallback content, Workbox service worker with the caching strategy specified in Section 5.2, manifest.json, and offline verification.
+
+
+Exit criteria: Three symmetry strategies operational; accessibility audit passed for keyboard and screen-reader operability; application loads and generates mandalas offline after first visit.
+
+
+---
+
+
+Phase 5 — Polish, Hardening, and Release Readiness (Sprints 5.1–5.2)
+
+
+Objective: Close performance and quality gaps, complete the test suite to the architectural contract in Section 7, and produce a release candidate.
+
+
+Sprint 5.1 — Performance regression suite and bundle discipline. Automated benchmarks in CI with threshold enforcement (fail on > 10% regression), bundle-size gate, WASM binary size budget, Lighthouse CI for PWA and accessibility scores.
+
+
+Sprint 5.2 — Release candidate. Full cross-browser validation (Chromium, Firefox, Safari desktop; Chrome Android; Safari iOS), service-worker update flow verification, documentation completion, and the first public deployment.
+
+
+Exit criteria: Release candidate passes all CI gates; cross-browser matrix green; offline and accessibility contracts verified in production configuration.
+
+
+---
+
+
+9. Risk Register (Phase 1 Baseline)
+
+
+Risk Likelihood Impact Mitigation
+WASM binary size exceeds acceptable threshold Medium High (delays load, defeats lazy-loading benefit) wasm-opt -Oz, LTO, size budget in CI, feature-gating of non-essential Rust code
+React-Konva per-node overhead at high N Medium Medium (frame drops) FastLayer discipline, React.memo, measured escape-hatch activation, object-count monitoring
+Service-worker cache invalidation bugs High Medium (stale app, broken updates) Workbox, content-hashed assets, "update available" UX, staged rollout
+Accessibility debt discovered late Medium High (retrofit cost) Accessibility mechanisms built into Phase 2 interaction model, not deferred
+WebAssembly Component Model changes landscape mid-project Low Low (contained) Strategy interface separation makes WCM migration a contained refactor
+
+
+---
+
+
+10. Immediate Next Steps (Handoff to Phase 2 Document)
+
+
+The following actions are assigned before the Phase 2 sprint-level document is issued:
+
+
+1. Scaffold the repository with the directory structure specified in the previous architecture discussion (features/mandala/, wasm/, components/ui/), and initialise the build pipeline (Vite, wasm-pack, Vitest with Browser Mode configuration, Workbox integration stubs).
+2. Establish benchmark device and baseline measurement harness for the JavaScript RadialStrategy prototype.
+3. Review and ratify the four ADRs (rendering, WASM adoption threshold, state architecture, accessibility contract) in the first technical alignment session.
+4. Define the initial palette manifest, including the Okabe-Ito set and at least one standard palette, with the stroke-style independence requirement encoded in the data model.
+
+
+Phase 2 will deliver the executable sprint plan for Core Rendering Engine (Sprints 2.1–2.3), including component-level task decomposition, test-first specifications for the SymmetryStrategy interface, and the CI gate definitions referenced in Section 8.
+
+
+---
+
+
+End of Phase 1 Document. Subsequent documents will follow the Phase 2 → Phase 5 sequence. Each will be self-contained for its phase, but will reference the architectural decisions and contracts established here without renegotiation unless a measured, documented reason for change emerges from the preceding phase's exit review.
+Document ID: MANDALA-PH2-SPRINT-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Executable Specification
+Supersedes: None
+References: MANDALA-PH1-STRAT-001 (Phase 1 Strategic Document)
+
+
+---
+
+
+1. Phase 2 Charter
+
+
+1.1 Purpose
+
+
+Phase 2 delivers the Core Rendering Engine in executable, testable increments. The architectural decisions ratified in Phase 1 are treated as binding constraints for this phase: React-Konva is the interactive rendering surface; the SymmetryStrategy interface is the seam through which all symmetry mathematics must pass; Zustand governs global mandala state; and accessibility mechanisms are built into the interaction model from the first sprint, not retrofitted.
+
+
+The phase is structured as three sequential sprints. Each sprint has a demonstrable outcome, a test-first specification for its critical interfaces, and an explicit exit criterion. No sprint begins until the preceding sprint's exit criterion is satisfied and reviewed.
+
+
+1.2 Phase 2 Exit Criterion (Cumulative)
+
+
+At the close of Sprint 2.3, a user must be able to: draw a wedge on the canvas; observe that wedge expand to N-fold radial symmetry in real time; adjust N via a control; select a colour from a first-class Okabe-Ito palette; change stroke style independently of colour; undo and redo committed strokes; and export the result as both PNG and SVG — all without network access after initial page load, and all with keyboard operability for every control and a screen-reader-readable parametric description of the current mandala.
+
+
+---
+
+
+2. Sprint 2.1 — Canvas Surface and Symmetry Primitives
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Phase 1 ratification of ADRs; repository scaffold per Section 10 of Phase 1.
+
+
+2.1.1 Sprint Objective
+
+
+Establish the React-Konva stage, the layer architecture, pointer capture, and the first working implementation of the SymmetryStrategy interface with a JavaScript RadialStrategy. Deliver a canvas on which a committed wedge visibly expands to N-fold symmetry, with guide overlays rendered as DOM elements — never burned into the render tree or the export surface.
+
+
+2.1.2 Task Breakdown
+
+
+Task 2.1.A — Stage and Layer Architecture
+
+
+The React-Konva Stage is sized to its container and must respond to container resize without remounting. The layer partition is fixed as follows and must not be deviated from without an ADR amendment:
+
+
+Layer Konva Type Contents Hit Detection
+Guide layer Standard Layer Radial spokes, centre mark, ring boundaries listening: false
+Committed layer Standard Layer Finalised wedge geometry, all N expansions listening: true (for selection and erasure in Sprint 2.2)
+Preview layer Standard Layer In-progress stroke before commit listening: false
+
+
+The guide layer must be rendered as a DOM overlay outside the React-Konva tree, not as a Konva layer. This is a deliberate departure from the layer table above for the guide elements specifically: DOM overlays guarantee that guides are structurally absent from any Stage.toDataURL() call, eliminating the risk of accidental export contamination. The Konva layer table governs the rendering layers; the guide overlay is a sibling DOM element positioned absolutely over the canvas container.
+
+
+Performance discipline from day one: the committed layer uses perfectDrawEnabled: false on individual shapes where visual acceptability permits, and shapes are memoised with React.memo to prevent unnecessary React-Konva reconciliation. The batchDraw() mechanism is relied upon for property-driven updates; explicit batchDraw calls are reserved for imperative batch mutations (e.g., programme-driven wedge insertion).
+
+
+Task 2.1.B — Pointer Capture and Wedge Accumulation
+
+
+Pointer events (pointerdown, pointermove, pointerup) are captured on the Stage container. During a stroke, points accumulate in component-local state — not in the Zustand store. The preview layer renders the accumulating polyline. On pointerup, the stroke is committed: the point array is passed to the active symmetry strategy, the expanded geometry is written to the committed layer's data model, and the global store records a COMMIT_STROKE action. The preview layer is cleared.
+
+
+The wedge data model is minimal and serialisable:
+
+
+```
+interface WedgeStroke {
+  id: string;              // monotonically increasing, stable identity
+  points: Array<{ x: number; y: number }>;
+  stroke: string;          // CSS colour
+  strokeWidth: number;
+  dash: number[] | null;   // null = solid
+  opacity: number;
+}
+```
+
+
+Task 2.1.C — SymmetryStrategy Interface and RadialStrategy
+
+
+The interface is ratified exactly as specified in Phase 1 Section 3.5. The JavaScript RadialStrategy implements expand(wedge, order, params): WedgeStroke[]. The mathematical approach is to precompute the N rotation angles from 2π/N and apply a cos/sin transform to each point of the wedge, producing N transformed stroke objects that share the same visual properties but differ in point coordinates.
+
+
+Critical implementation detail: the transformation is applied at the point level, not at the Konva node level. Rotating a Konva Group with child shapes is visually correct but defeats the purpose of the strategy seam — the geometry model must be fully expanded so that the SVG export (Sprint 2.3) can serialise each transformed shape without relying on SVG transform attributes. This choice trades a marginally larger in-memory model for a simpler, more portable export path.
+
+
+The RadialStrategy declares minWedgeComplexity: 0 in Phase 2 — meaning it is always the JavaScript implementation, never routed to WASM. The threshold becomes meaningful in Phase 3 when the WASM implementation is benchmarked.
+
+
+Task 2.1.D — Symmetry Control Wiring (Minimal)
+
+
+A single slider control (N from 3 to 36, default 8) is wired to the Zustand store's symmetryOrder field. Changing N triggers re-expansion of all committed wedges through the active strategy. The slider is the first component in the compound-component control panel and establishes the pattern for subsequent controls.
+
+
+2.1.3 Test-First Specification
+
+
+The SymmetryStrategy interface must have a test suite written before the RadialStrategy implementation. The test suite asserts, at minimum:
+
+
+· Expansion of a single-point wedge at N=8 produces 8 strokes, each at 45° increments.
+· Expansion is idempotent with respect to point order: reversing the point array reverses each transformed array but preserves the set of produced strokes.
+· The centre point (0,0) maps to itself under all rotations.
+· Degenerate wedges (zero points, one point) do not throw and produce coherent output.
+
+
+Canvas rendering tests for Sprint 2.1 are limited to pointer event handling and commit semantics (jsdom-compatible). Pixel-level rendering verification is deferred to Sprint 2.2 when the Vitest Browser Mode harness is fully configured.
+
+
+2.1.4 Sprint 2.1 Exit Criterion
+
+
+A developer can open the application, draw a freehand stroke in the canvas, and observe that stroke replicated N times around the centre according to the slider value. The guide overlay (spokes, centre) is visible but does not appear in a Stage.toDataURL() capture. The RadialStrategy test suite passes. No WASM code exists in the repository; no network requests occur after initial load.
+
+
+---
+
+
+3. Sprint 2.2 — Interaction, State, and Undo/Redo
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Sprint 2.1 exit criterion satisfied and reviewed.
+
+
+3.2.1 Sprint Objective
+
+
+Formalise the Zustand store with the slice pattern, implement undo/redo for committed strokes, deliver the compound-component control panel (palette, stroke style, tool selection), and establish the canvas testing harness in Vitest Browser Mode.
+
+
+3.2.2 Task Breakdown
+
+
+Task 2.2.A — Zustand Store with Slice Pattern
+
+
+The store is composed of three slices, each in its own file, combined at creation time via the slice pattern using StateCreator:
+
+
+Slice State Actions
+sceneSlice wedges: WedgeStroke[], symmetryOrder: number, activeStrategyId: string commitStroke, clearScene, setSymmetryOrder
+paletteSlice activeColour: string, activeDash: number[] \| null, activeStrokeWidth: number, palettes: Palette[] setColour, setDash, setStrokeWidth
+toolSlice activeTool: 'stroke' \| 'point' \| 'erase' setTool
+
+
+Components subscribe only to the minimal slice they require. The canvas subscribes to sceneSlice alone; the palette panel subscribes to paletteSlice alone. This prevents the palette panel from re-rendering when a stroke commits and prevents the canvas from re-rendering when a colour is selected without commit.
+
+
+Task 2.2.B — Undo/Redo via Command Pattern
+
+
+The undo/redo implementation uses the command pattern, not snapshot cloning. Each committed stroke produces a command object with do() and undo() closures:
+
+
+```
+interface HistoryCommand {
+  label: string;           // human-readable, for potential UI display
+  do: () => void;          // reapplies the effect (used by redo)
+  undo: () => void;        // reverses the effect (used by undo)
+}
+```
+
+
+The history stack is a bounded array (50 entries) held in a dedicated Zustand slice or in a zundo temporal store. The team is instructed to evaluate zundo first: it is a sub-700-byte middleware that provides undo, redo, clear, pause, and resume with configurable state tracking. If zundo satisfies the command-pattern semantics required (particularly the ability to exclude transient state like pointer position from history tracking), it is adopted; otherwise, a minimal custom command stack is implemented. The decision is recorded as an ADR at Sprint 2.2 close.
+
+
+Task 2.2.C — Compound Control Panel
+
+
+The control panel is implemented as a compound component:
+
+
+```
+<MandalaControls>
+  <MandalaControls.Symmetry />    // slider for N
+  <MandalaControls.Palette />     // colour selection from active palette
+  <MandalaControls.StrokeStyle /> // dash and width controls
+  <MandalaControls.Tools />       // tool toggle group
+</MandalaControls>
+```
+
+
+Shared context is provided by the parent; each sub-component consumes only the slice it needs. The Palette component renders the Okabe-Ito palette as the default, with the eight hex values hard-coded from the ratified Phase 1 specification: #000000, #E69F00, #56B4E9, #009E73, #F0E442, #0072B2, #D55E00, #CC79A7. The StrokeStyle component enforces the Phase 1 requirement that dash pattern and stroke width are adjustable independently of colour — the data model must not couple them.
+
+
+Task 2.2.D — Canvas Testing Harness (Vitest Browser Mode)
+
+
+The jsdom environment cannot verify rendered pixels. This sprint establishes the Vitest Browser Mode configuration for canvas rendering tests. The test surface includes: stroke commit produces the expected number of Konva nodes; pointer events are delivered to the correct layer; preview layer clears on commit; guide overlay DOM elements are present and correctly positioned. The harness configuration is documented and committed to the repository as a reusable fixture for Phase 3–5 tests.
+
+
+3.2.3 Sprint 2.2 Exit Criterion
+
+
+A user can draw strokes, change symmetry order, select colours from the Okabe-Ito palette, change dash and width independently, undo the last committed stroke, redo it, and clear the scene. The canvas rendering test harness is operational in Browser Mode. The zundo-versus-custom ADR is recorded. Keyboard navigation reaches every control; the compound panel is operable without a pointer.
+
+
+---
+
+
+4. Sprint 2.3 — Export, Palette Completion, and Accessibility Baseline
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Sprint 2.2 exit criterion satisfied and reviewed.
+
+
+4.3.1 Sprint Objective
+
+
+Deliver the PNG and SVG export paths, complete the palette data model with multiple palettes, and establish the accessibility baseline required by the Phase 2 exit criterion: synchronised fallback content and a debounced ARIA live region.
+
+
+4.3.2 Task Breakdown
+
+
+Task 2.3.A — PNG Export via Dedicated Export Surface
+
+
+PNG export uses Stage.toDataURL({ pixelRatio }) on a dedicated export Stage, not the interactive Stage. The export Stage is instantiated off-screen (or hidden), receives the same geometry data from the store, and is rendered without the guide overlay. The pixelRatio parameter is exposed to the user (1×, 2×, 4×) and mapped to output dimensions.
+
+
+The export function must call stage.dragging(false) before capture if any drag operation could be in progress, per documented Konva export hygiene. The export Stage is disposed after capture to release GPU memory. The resulting data URL is converted to a Blob and downloaded via an anchor element with a download attribute.
+
+
+Task 2.3.B — SVG Export via Geometry Serialisation
+
+
+The SVG export serialises the geometry model directly, not the rendered canvas. This is the payoff of the point-level expansion decision from Sprint 2.1: each WedgeStroke in the expanded model maps to an SVG <path> or <polyline> element with absolute coordinates. No transform attributes are required.
+
+
+The serialisation strategy follows the well-established mandala-SVG pattern: define the base wedge path once in <defs>, then instance it with <use> elements at computed rotation transforms. However, because Sprint 2.1 chose point-level expansion, the team has both options available: (a) emit N <path> elements with absolute coordinates, or (b) emit one <path> in <defs> and N <use> elements with transform="rotate(θ, cx, cy)". The team should benchmark file size for typical N and wedge complexity and select the smaller output. The <defs>/<use> approach is typically more compact for simple wedges; the absolute-coordinate approach is more portable across SVG consumers.
+
+
+The SVG output includes the viewBox attribute with a centred coordinate system (-W/2 -H/2 W H) and explicit width and height attributes. The export function is a pure serialisation of the store's wedges array and symmetryOrder — it does not read from the canvas.
+
+
+Task 2.3.C — Palette Data Model and Second Palette
+
+
+The palette model is formalised:
+
+
+```
+interface Palette {
+  id: string;
+  name: string;
+  colours: string[];
+  colourblindSafe: boolean;
+}
+```
+
+
+The Okabe-Ito palette is colourblindSafe: true. A second palette (a standard high-contrast set) is added to demonstrate the model's extensibility. The palette selector in the control panel lists available palettes by name and indicates the colourblind-safe status visually and in the accessible name.
+
+
+Task 2.3.D — Accessibility Baseline: Fallback Content and Live Region
+
+
+The <canvas> element (inside the Konva Stage) receives fallback DOM content that describes the current mandala parametrically:
+
+
+"Mandala with 8-fold radial symmetry. 3 strokes committed. Active palette: Okabe-Ito (colourblind-safe). Active colour: Sky Blue (#56B4E9). Stroke style: solid, width 3."
+
+
+This fallback content is synchronised from the Zustand store via a throttled subscription (1 update per 500 ms during active drawing; immediate on commit or control change). It is placed as child content of the <canvas> element so that assistive technology that does not execute JavaScript still receives it, and it is additionally mirrored in a visually hidden <div> with role="status" and aria-live="polite" for dynamic announcement.
+
+
+The live region announces significant state changes only: symmetry order change, palette change, tool change, and export completion. Announcements are debounced at 300 ms to prevent flooding during slider drag. Individual stroke commits are not announced, as they occur at drawing frequency.
+
+
+The canvas-text-layer library is evaluated but not adopted in Phase 2. It solves the text-in-canvas accessibility problem — making canvas-rendered text searchable and screen-reader readable via a DOM text mirror — but the mandala application's accessible representation is parametric, not textual. The library remains a candidate for Phase 4 if the application introduces text annotations on the canvas. The evaluation is recorded in the accessibility ADR addendum.
+
+
+4.3.3 Sprint 2.3 Exit Criterion
+
+
+A user can export the current mandala as PNG at three resolutions and as SVG with correct geometry and no guide contamination. Two palettes are selectable, one marked colourblind-safe. The canvas has meaningful fallback content and a debounced live region. A screen-reader pass confirms that the parametric description is announced on focus and that symmetry-order changes are announced without flooding. All Phase 2 exit criteria (Section 1.2) are satisfied and demonstrated in a sprint review.
+
+
+---
+
+
+5. Cross-Sprint Concerns
+
+
+5.1 Performance Guardrails
+
+
+The JavaScript RadialStrategy must sustain interactive re-expansion at N=8 with up to 50 wedge points at ≥ 50 fps on the Phase 1 benchmark device. If this target is not met by Sprint 2.2, the team must investigate before Sprint 2.3: candidate causes include excessive React-Konva reconciliation (insufficient React.memo coverage), layer misconfiguration (listening not disabled on guides and preview), or unnecessary store subscriptions. WASM is not the remedy for a React-Konva configuration problem; the escape hatch is Phase 3 work and is not to be pre-empted.
+
+
+5.2 Accessibility Non-Negotiables
+
+
+Every interactive control added in any sprint of Phase 2 must be keyboard operable at the point of introduction. A control that ships pointer-only is a defect, not technical debt. The screen-reader announcement contract (debounced live region, parametric fallback) is established in Sprint 2.3 and every subsequent feature must route through it.
+
+
+5.3 Testing Discipline
+
+
+The test pyramid for Phase 2 is: unit tests for SymmetryStrategy and store reducers (jsdom, fast); canvas rendering tests in Vitest Browser Mode (slower, run in CI); accessibility assertions via axe on the control panel (automated) plus a manual screen-reader pass at Sprint 2.3 close. No test is written against the WASM boundary in Phase 2 because the WASM boundary does not yet exist; the SymmetryStrategy test suite is deliberately implementation-agnostic so that the Phase 3 Rust implementation can be validated against the same test vectors.
+
+
+5.4 Risk Watch for Phase 2
+
+
+Risk Trigger Response
+React-Konva reconciliation cost at high N Frame time exceeds 20 ms at N=24 during slider drag Profile layer configuration; verify listening: false on non-interactive layers; memoise shape components; do not begin WASM work early
+zundo incompatible with command-pattern requirements zundo snapshots include transient pointer state Fall back to custom command stack; record ADR
+SVG export file size unacceptable at high N SVG > 2 MB at N=36 with dense wedges Switch from absolute-path emission to <defs>/<use>; measure both
+Accessibility regression during rapid feature addition Control ships without keyboard handler CI axe check plus manual checklist gate at each sprint close
+
+
+---
+
+
+6. Handoff to Phase 3
+
+
+Phase 3 (WASM Integration and Performance Hardening) will deliver the Rust RadialStrategy implementation, the persistent Web Worker harness, the transferable-buffer protocol, and the empirical calibration of the minWedgeComplexity threshold. The Phase 3 sprint plan will be issued only after Sprint 2.3 exit review, and will reference the performance baseline recorded in this phase as its comparison point.
+
+
+The SymmetryStrategy test suite written in Sprint 2.1 is the contract that the Rust implementation must satisfy. The Phase 3 team inherits a known-good JavaScript baseline, a measured performance profile, and a strategy interface that was designed from Phase 1 to accept a WASM implementation without orchestrator changes. No architectural renegotiation is expected at the Phase 3 boundary.
+
+
+---
+
+
+End of Phase 2 Document. Phase 3 will follow as the next sequential communication.
+Document ID: MANDALA-PH3-WASM-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Executable Specification
+Supersedes: None
+References: MANDALA-PH1-STRAT-001, MANDALA-PH2-SPRINT-001
+Inherits from Phase 2: The JavaScript RadialStrategy baseline, the SymmetryStrategy test suite, the measured performance profile at N=8/12/24/36, and the Zustand store contract.
+
+
+---
+
+
+1. Phase 3 Charter
+
+
+1.1 Purpose
+
+
+Phase 3 introduces WebAssembly for the compute paths that Phase 2 identified as candidates, subject to empirical justification. The governing rule from Phase 1 remains binding: WASM is adopted where an operation consistently exceeds approximately 50 ms on typical devices, and rejected where it falls below approximately 10 ms; the 10–50 ms band is a profiling grey area resolved by measurement, not by intuition. The oft-cited production data point — 3.2× throughput improvement and a ~220 ms p95 reduction on a heavy image-processing workload — is the class of win that justifies the added complexity; single-digit-millisecond helpers do not qualify.
+
+
+Phase 3 is therefore structured as two sequential sprints with a hard gate between them. Sprint 3.1 builds the Rust symmetry core and the worker harness. Sprint 3.2 executes the benchmark matrix, calibrates the threshold from measured data, and activates the WASM path only where the data justifies it. The JavaScript RadialStrategy remains the default execution path throughout Phase 3; WASM is feature-flagged and benchmark-gated.
+
+
+1.2 Phase 3 Exit Criterion (Cumulative)
+
+
+At the close of Sprint 3.2: a Rust RadialStrategy implementation satisfies the exact same test vectors written in Phase 2 against the SymmetryStrategy interface; the WASM module is lazy-loaded inside a persistent Web Worker and is absent from the critical bundle; the benchmark matrix (N ∈ {8, 12, 24, 36, 48} × wedge complexity ∈ {low, medium, high}) is recorded and published; the minWedgeComplexity threshold per strategy is set from measured data and documented in an ADR; and the pixel-buffer escape hatch is functional at the high-complexity corner (N=48, dense wedges) without regressing the interactive frame-rate contract (≥ 50 fps on the Phase 1 benchmark device).
+
+
+---
+
+
+2. Sprint 3.1 — Rust Symmetry Core and Worker Harness
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Phase 2 exit review closed; Phase 2 performance baseline recorded and accessible to the team.
+
+
+2.1.1 Sprint Objective
+
+
+Implement RadialStrategy in Rust with interface semantics identical to the JavaScript implementation; establish the wasm-pack build pipeline integrated with Vite; instantiate the module inside a persistent Web Worker; and implement the transferable-buffer protocol for geometry exchange. The WASM path is built, tested, and feature-flagged off by default at sprint close.
+
+
+2.1.2 Task Breakdown
+
+
+Task 3.1.A — Rust Crate Structure and SymmetryStrategy Parity
+
+
+The Rust crate exposes a single #[wasm_bindgen] function surface that mirrors the JavaScript expand() semantics. The interface contract is the Phase 2 test suite: the Rust implementation must pass the same test vectors, not a parallel set. This is non-negotiable — it is the mechanism by which the strategy seam remains honest.
+
+
+The crate structure follows the modular separation principle established in Phase 1 (inspired by wassily): a geometry module for point transformation mathematics, a symmetry module for the radial expansion, and a thin bindings module for wasm-bindgen exports. Colour, stroke properties, and identifiers are not processed in Rust; they are carried through as opaque metadata attached on the JavaScript side after the geometry buffer returns. This keeps the WASM surface minimal and avoids serialisation of strings across the boundary — the documented failure mode where non-ASCII encoding and memory-view staleness create bugs that cargo test cannot catch.
+
+
+The geometry exchange format is a flat Float64Array of [x0, y0, x1, y1, …] per transformed stroke, with a parallel Uint32Array of stroke lengths so the JavaScript side can reconstruct individual polylines. This avoids serde/JsValue object marshalling, which is the dominant cost in JS↔WASM exchanges of structured data.
+
+
+Task 3.1.B — Build Pipeline: wasm-pack + Vite Integration
+
+
+The build command is wasm-pack build ./crate --target web --release, with no additional flags — the --target web flag and release profile are the only required invocation. The generated pkg/ directory is consumed as a local package ("mandala-wasm": "file:../crate/pkg").
+
+
+Vite requires two plugins to handle the WASM module correctly: vite-plugin-wasm and vite-plugin-top-level-await. Both are added to vite.config.ts and to devDependencies. The team is instructed to disregard the substantial volume of incorrect online guidance about wasm-pack flags; the minimal invocation above is the one that works with this stack.
+
+
+The release profile in Cargo.toml is fixed as follows, with each setting carrying a documented rationale:
+
+
+```toml
+[profile.release]
+opt-level = "z"        # aggressive size optimisation
+lto = true             # cross-crate dead-code elimination
+codegen-units = 1      # single-unit compilation for better optimisation
+panic = "abort"        # smaller panic handling, no unwind tables
+strip = true           # remove debug info
+```
+
+
+This configuration is the consensus recommendation across the current Rust/WASM literature and has been reported to reduce binaries from approximately 400 KB to approximately 128 KB in comparable projects. The .wasm artifact is post-processed with wasm-opt -Oz (Binaryen), which typically yields an additional ~10% size reduction beyond the Rust profile flags. The CI pipeline fails if the final .wasm binary exceeds the size budget set in Sprint 3.2 (provisional: 300 KB gzipped).
+
+
+Serving constraint: the .wasm file must be served with Content-Type: application/wasm so that WebAssembly.instantiateStreaming() can overlap download and compilation. The Vite dev server and production host must both be configured accordingly; this is verified as part of the sprint exit.
+
+
+Task 3.1.C — Persistent Web Worker and Transferable-Buffer Protocol
+
+
+The WASM module is instantiated inside a persistent Web Worker, not on the main thread. This achieves three objectives simultaneously: it prevents long WASM runs from janking the main thread, it amortises instantiation cost across multiple jobs, and it isolates the module's linear memory from the React rendering surface.
+
+
+The worker is a module worker (new Worker(new URL('./wasm-worker.js', import.meta.url), { type: 'module' })). The message protocol is typed and minimal:
+
+
+Message Direction Payload Transferable
+INIT main → worker { type: 'INIT' } —
+READY worker → main { type: 'READY' } —
+EXPAND main → worker { type: 'EXPAND', points: Float64Array, order: number } [points.buffer]
+EXPANDED worker → main { type: 'EXPANDED', buffer: Float64Array, lengths: Uint32Array } [buffer.buffer, lengths.buffer]
+ERROR worker → main { type: 'ERROR', message: string } —
+
+
+The input Float64Array is transferred, not copied — the main thread relinquishes ownership at the postMessage boundary, achieving O(1) transfer cost. The worker writes the expanded geometry into a freshly allocated buffer (or reuses a pooled buffer) and transfers it back. The main thread reconstructs WedgeStroke objects by attaching the original stroke metadata (colour, width, dash, opacity) from the originating wedge — these properties are invariant under rotation and never cross the boundary.
+
+
+SharedArrayBuffer is not adopted in Phase 3. It requires COOP/COEP cross-origin isolation headers, which impose deployment constraints not yet justified by the workload profile; transferable buffers provide the required zero-copy semantics for the single-job-at-a-time usage pattern. A worker pool with SharedArrayBuffer is deferred to a future phase if the benchmark demonstrates a queueing bottleneck.
+
+
+Task 3.1.D — Lazy Loading via React 19 use() and Suspense
+
+
+The WASM path is never in the critical bundle. It is loaded on first demand through a cached, stable Promise consumed with React 19's use() hook inside a Suspense boundary. The Promise is created once, outside the render cycle, satisfying the documented requirement that use() receives a cached Promise rather than one created during render.
+
+
+```typescript
+// wasmLoader.ts — module-scope cached promise
+let wasmPromise: Promise<WasmModule> | null = null;
+
+
+export function loadWasm(): Promise<WasmModule> {
+  if (!wasmPromise) {
+    wasmPromise = initWorkerAndModule();
+  }
+  return wasmPromise;
+}
+
+
+// Component
+function MandalaCanvas() {
+  const wasm = use(loadWasm()); // suspends until READY
+  // ...
+}
+
+
+// Boundary at app root
+<Suspense fallback={<CanvasSkeleton />}>
+  <MandalaCanvas />
+</Suspense>
+```
+
+
+The Suspense boundary is placed at the application root, not per-component, as recommended for use()-based loading. The WasmErrorBoundary catches initialisation failures and falls back to the JavaScript RadialStrategy transparently — the user is never blocked by a WASM failure.
+
+
+Task 3.1.E — Feature Flag and Default-Off Activation
+
+
+The WASM path is guarded by a build-time flag (VITE_ENABLE_WASM_SYMMETRY) and a runtime capability check (module instantiates successfully). At Sprint 3.1 close, the flag is off by default. The orchestrator in the Zustand store routes expand() calls to the JavaScript strategy regardless of the flag state until Sprint 3.2 sets the calibrated threshold. The feature flag mechanism is itself tested — a test asserts that toggling the flag changes the routing decision without altering the produced geometry.
+
+
+2.1.3 Test-First Specification
+
+
+The Rust cargo test suite covers the pure geometry: rotation correctness, centre-point invariance, degenerate inputs, and numerical tolerance. These run natively, fast, and without a browser.
+
+
+The boundary test suite runs in Vitest and covers the failure modes that only exist when JavaScript is involved:
+
+
+· Module initialisation ordering: a call to expand() before INIT completes rejects with a typed error, not a silent hang.
+· Buffer ownership: the transferred input buffer is detached on the main thread after postMessage (accessing it throws), confirming transfer rather than copy.
+· Geometry parity: the WASM output matches the JavaScript output within 1e-12 tolerance across all Phase 2 test vectors.
+· Error propagation: a Rust panic (injected via a test-only export) arrives as a rejected Promise with a meaningful message, not an unhandled worker error.
+· Memory stability: repeated EXPAND calls (1,000 iterations) do not grow the worker's linear memory beyond a bounded ceiling.
+
+
+The module is loaded once per test file via top-level await init({ module_or_path: bytes }), passing the raw bytes to avoid the file-URL fetch limitation in Node. Browser-mode tests (for worker instantiation and instantiateStreaming) run in Vitest Browser Mode, which executes the same test files in a real browser engine driven by Playwright — the only environment where Workers and OffscreenCanvas exist for real.
+
+
+2.1.4 Sprint 3.1 Exit Criterion
+
+
+The Rust RadialStrategy passes all Phase 2 test vectors with 1e-12 parity. The WASM binary builds in CI under the size budget, is served with application/wasm, and loads lazily inside a persistent worker. The feature flag defaults to off. The boundary test suite and the native Rust test suite are both green. No main-bundle size regression is recorded.
+
+
+---
+
+
+3. Sprint 3.2 — Benchmark Calibration and Escape Hatch
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Sprint 3.1 exit criterion satisfied and reviewed; Phase 2 performance baseline available for comparison.
+
+
+3.2.1 Sprint Objective
+
+
+Execute the benchmark matrix, publish the measured results, set the minWedgeComplexity threshold per strategy from the data, activate the WASM path where justified, and deliver the pixel-buffer escape hatch for the high-complexity corner. This sprint converts the WASM integration from "technically functional" to "empirically governed."
+
+
+3.2.2 Task Breakdown
+
+
+Task 3.2.A — Benchmark Matrix Execution
+
+
+The benchmark harness measures end-to-end expansion time (from expand() call to committed geometry available in the store) on the Phase 1 benchmark device, for both the JavaScript and WASM paths. The matrix is:
+
+
+Dimension Values
+Symmetry order (N) 8, 12, 24, 36, 48
+Wedge complexity low (≤ 5 points), medium (6–25 points), high (26–50 points)
+Execution path JavaScript RadialStrategy, WASM RadialStrategy
+Repetitions 50 per cell, discard first 5 warm-up, report median and p95
+
+
+The harness is a Vitest Browser Mode suite with performance.now() instrumentation, run in CI on a pinned runner class. Results are serialised to a JSON artifact committed to the repository under benchmarks/phase3/. The published table includes the boundary-crossing overhead separately from the computation time, so that the team can see whether a regression is algorithmic or transport-related.
+
+
+Task 3.2.B — Threshold Calibration ADR
+
+
+The minWedgeComplexity value for each strategy is set from the benchmark data, not from assumption. The decision rule is applied mechanically:
+
+
+· If WASM median is ≥ 50 ms and JavaScript median is ≥ 50 ms: WASM is adopted; the threshold is set at the complexity level where WASM first wins by ≥ 20%.
+· If both are ≤ 10 ms: WASM is not adopted for that cell; the JavaScript path remains.
+· If the cell falls in the 10–50 ms band: the faster path is adopted, but the decision is flagged as a grey-area judgement in the ADR and revisited if the benchmark device class changes.
+
+
+The ADR records the full matrix, the decision rule applied, the resulting threshold, and the cells where the decision was non-obvious. This ADR is the only mechanism by which the WASM path is activated; a developer cannot enable WASM for a cell the ADR does not cover without amending the ADR.
+
+
+Task 3.2.C — Pixel-Buffer Escape Hatch
+
+
+For the high-complexity corner of the matrix (N=48, dense wedges) where even the WASM expansion path may produce object counts that exceed React-Konva's comfortable range, the Rust module exposes a render_to_buffer function. It writes the fully expanded geometry directly into an RGBA pixel buffer (Uint8ClampedArray), which the main thread blits to the canvas via putImageData or converts to an ImageBitmap.
+
+
+This path bypasses React-Konva entirely for the render step. It is activated only when the expanded object count exceeds a measured ceiling (to be set from the React-Konva frame-time data at Sprint 3.2 close, provisionally 2,000 nodes). The escape hatch is tested against the interactive frame-rate contract: it must not regress below 50 fps during a simulated drag at N=48 with dense wedges.
+
+
+The trade-off is explicit and documented: the escape hatch loses React-Konva's event handling and selection semantics for the affected content. The ADR records this limitation and the mitigation (selection remains available on the committed layer's individual shapes; only the pixel-blit render path is event-opaque).
+
+
+Task 3.2.D — JavaScript Fallback Verification
+
+
+Every benchmark run also exercises the JavaScript path under the same conditions. This is not ceremonial: it is the mechanism that catches a class of regression where the WASM path is improved at the cost of the JavaScript path's configuration (e.g., an accidental store subscription that affects both). The exit criterion requires that the JavaScript path's Phase 2 baseline is not regressed by more than 10%.
+
+
+3.2.3 Sprint 3.2 Exit Criterion
+
+
+The benchmark matrix is published with medians and p95 per cell. The threshold ADR is ratified and merged. The WASM path is activated exactly where the ADR specifies and nowhere else. The pixel-buffer escape hatch is functional at N=48 with dense wedges and does not regress the frame-rate contract. The JavaScript fallback is within 10% of its Phase 2 baseline. The .wasm binary is within its size budget.
+
+
+---
+
+
+4. Cross-Sprint Concerns
+
+
+4.1 Performance Discipline
+
+
+The WASM boundary is expensive. The team is instructed to measure the round-trip cost of a no-op EXPAND call (empty wedge) and record it in the benchmark artifact. If this cost exceeds the JavaScript path's total time for low-complexity wedges, the threshold rule must reflect that — a WASM path that loses on boundary overhead for simple inputs is correctly classified as "not adopted" for those inputs, regardless of its asymptotic advantage.
+
+
+4.2 Testing Boundary
+
+
+Native Rust tests (cargo test) cover the algorithm. Vitest boundary tests cover the interface: string encoding, memory ownership, initialisation ordering, error propagation, and view staleness after memory growth. These are the bugs that cargo test cannot catch because they do not exist until JavaScript is involved. Vitest Browser Mode is used for anything requiring a real Worker, OffscreenCanvas, or instantiateStreaming — jsdom does not provide these, and the Browser Mode run executes the same files in a real engine.
+
+
+4.3 Build and Supply Chain
+
+
+wasm-pack, wasm-bindgen-cli, and wasm-opt versions are pinned in CI. The Rust toolchain is pinned via rust-toolchain.toml. The .wasm artifact is content-hashed and cached with the service-worker strategy specified in Phase 1 (cache-first, immutable). The CSP must permit worker-src 'self' and script-src 'wasm-unsafe-eval' (or the narrower 'wasm-unsafe-eval' where supported) for the module to instantiate in production.
+
+
+4.4 Risk Watch for Phase 3
+
+
+Risk Trigger Response
+WASM boundary overhead negates compute win No-op round-trip exceeds low-complexity JS time Threshold ADR classifies those cells as "not adopted"; JS remains default
+Binary size exceeds budget after wasm-opt Gzipped .wasm > 300 KB Audit Rust dependencies (wasm-bindgen features, wee_alloc vs default allocator); tighten opt-level
+Worker initialisation race EXPAND sent before READY Queueing in the worker harness; boundary test asserts typed rejection, not silent hang
+Vitest Browser Mode worker flakiness in CI Intermittent worker timeout Pin Playwright version; increase per-test timeout for worker tests only; isolate worker tests in a separate CI job
+Escape hatch breaks selection semantics User cannot select shapes at high N Documented limitation in ADR; selection remains available on committed layer where node-based rendering is retained
+
+
+---
+
+
+5. Handoff to Phase 4
+
+
+Phase 4 (Creative Expansion and Accessibility Completion) delivers the second symmetry strategy (MirrorRadialStrategy) and the procedural generation layer, with the Strategy Pattern now proven across two execution environments (JavaScript and WASM). The Phase 3 threshold ADR is the contract that Phase 4's strategy implementations inherit: each new strategy declares its own minWedgeComplexity, and the orchestrator routes it through the same benchmark-gated mechanism established here. No orchestrator changes are expected at the Phase 4 boundary; if a change is required, it is a signal that the strategy interface from Phase 1 was insufficient and must be revisited with an ADR amendment.
+
+
+---
+
+
+End of Phase 3 Document. Phase 4 will follow as the next sequential communication.
+Document ID: MANDALA-PH4-CREATIVE-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Executable Specification
+Supersedes: None
+References: MANDALA-PH1-STRAT-001, MANDALA-PH2-SPRINT-001, MANDALA-PH3-WASM-001
+Inherits from Phase 3: The calibrated minWedgeComplexity threshold ADR, the feature-flagged WASM path, the persistent worker harness with transferable-buffer protocol, the pixel-buffer escape hatch, and the SymmetryStrategy interface ratified in Phase 1 and validated across two execution environments.
+
+
+---
+
+
+1. Phase 4 Charter
+
+
+1.1 Purpose
+
+
+Phase 4 delivers the creative expansion of the application and completes the accessibility and offline delivery contracts deferred from earlier phases. The Strategy Pattern now pays its debt: two new symmetry strategies (MirrorRadialStrategy and FractalStrategy) are added without modifying the orchestrator, proving the interface seam established in Phase 1 was correctly drawn. Simultaneously, the accessibility surface is completed to the Phase 1 specification — synchronised parametric fallback, debounced live-region announcements, and full keyboard operability for every interactive element — and the application is delivered as an offline-capable Progressive Web App.
+
+
+Phase 4 inherits the WASM infrastructure from Phase 3 but does not expand it with new WASM modules unless the benchmark gate (Section 3.2 of Phase 3) explicitly justifies it. The FractalStrategy is implemented in JavaScript initially; its eligibility for a Rust/WASM implementation is evaluated against the same calibration rule and recorded as an ADR amendment if the data warrants it.
+
+
+1.2 Phase 4 Exit Criterion (Cumulative)
+
+
+At the close of Sprint 4.2: three symmetry strategies are operational (Radial, MirrorRadial, Fractal), each declaring its own minWedgeComplexity and routing through the Phase 3 orchestrator without orchestrator changes; the accessibility audit passes for keyboard operability and screen-reader announcement of parametric state; the application loads and generates mandalas offline after the first visit, with the WASM binary cached under the Phase 1 cache-first strategy; and the PWA manifest and service-worker update flow are verified in a production configuration.
+
+
+---
+
+
+2. Sprint 4.1 — Strategy Expansion: Mirror-Radial and Fractal
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Phase 3 exit criterion satisfied and reviewed; the threshold ADR and the worker harness are stable and merged.
+
+
+2.1.1 Sprint Objective
+
+
+Implement MirrorRadialStrategy and FractalStrategy against the unchanged SymmetryStrategy interface. Extend the compound control panel to accommodate strategy-specific parameters. The orchestrator routing logic, the Zustand slice structure, and the export pipeline must remain unmodified — any required change is treated as evidence that the Phase 1 interface was insufficient and triggers an ADR review, not a silent patch.
+
+
+2.1.2 Task Breakdown
+
+
+Task 4.1.A — MirrorRadialStrategy
+
+
+The mirror-radial strategy extends the radial expansion by reflecting each transformed wedge across its radial axis, producing 2N visual elements from N rotational positions. The mathematical implementation reuses the Phase 2 rotation precomputation and applies a reflection matrix across the axis at angle θ/2. The strategy declares id: "mirror-radial" and its own minWedgeComplexity inherited from the Phase 3 threshold ADR — the reflection step adds a constant-cost per-point operation, so the WASM-benefit threshold is expected to be lower than pure radial (more work per point, so WASM wins earlier), but the value is set from measurement, not assumption.
+
+
+The strategy-specific parameters are { mirrorMode: 'reflect' | 'alternate' }, where alternate flips the reflection direction on alternating wedges to produce a continuous, interlocking pattern rather than a strictly bilateral one. These parameters are held in the sceneSlice and passed through the orchestrator to the strategy's expand() call. The compound control panel adds a <MandalaControls.StrategyParams> slot that renders the appropriate sub-controls for the active strategy.
+
+
+Task 4.1.B — FractalStrategy (L-System Base)
+
+
+The fractal strategy generates the wedge geometry from an L-system (Lindenmayer system) — a string-rewriting grammar with a turtle-graphics interpreter. The choice of L-system over raw recursion is deliberate: the grammar and the turtle interpreter are pure functions, decoupled from any rendering surface, which makes them testable without a canvas and portable between the JavaScript and (future) WASM implementations.
+
+
+The team evaluates l-system-p5js as a reference implementation. Its grammar expansion and turtle-segment generation are pure and decoupled from p5 — the drawing helper requires a p5 instance, but the expand() and turtleSegments() helpers do not. The team adopts the grammar model (axiom, rules, angle, turtle alphabet F, G, f, +, -, [, ]) and implements the expansion and turtle interpreter as application-native pure functions, rather than depending on the p5-bound package. The presets (plant, kochCurve, sierpinski, dragon) are used as test fixtures and as seed presets for the user-facing fractal generator.
+
+
+The FractalStrategy interface implementation is:
+
+
+```
+expand(wedge: Geometry, order: number, params: FractalParams): Geometry[]
+```
+
+
+where FractalParams includes { axiom: string; rules: Record<string, string>; angle: number; generations: number; length: number }. The strategy first expands the axiom by the requested generations, interprets the resulting string as turtle segments (an array of [x1, y1, x2, y2] line segments), and then applies the Phase 2 radial expansion to those segments. The radial expansion is delegated to the existing RadialStrategy implementation rather than reimplemented — composition over duplication. This means the fractal strategy is a geometry generator that feeds the established symmetry engine, not a parallel rendering path.
+
+
+The performance profile is expected to be dominated by the string-rewriting and turtle interpretation (generation-dependent, exponential in generations) rather than the radial expansion. The minWedgeComplexity for the fractal strategy is therefore set against segment count, not point count, and the threshold ADR is amended to record this distinction. If the benchmark shows that fractal generation at generations ≥ 5 consistently exceeds the 50 ms rule, a WASM implementation is scheduled for Phase 5 rather than shoehorned into Phase 4.
+
+
+Task 4.1.C — Compound Control Panel Extension
+
+
+The compound component is extended without altering its public API:
+
+
+```
+<MandalaControls.StrategyParams />
+```
+
+
+renders the active strategy's parameter controls. For RadialStrategy and MirrorRadialStrategy, this is minimal (symmetry order, mirror mode). For FractalStrategy, it exposes preset selection (the four L-system presets), generation count (1–6, with a performance warning at ≥ 5), angle, and segment length. Each parameter control is keyboard operable and routes through the same Zustand slice pattern established in Phase 2; no new state-management pattern is introduced.
+
+
+Task 4.1.D — Strategy Routing Verification
+
+
+The orchestrator's routing logic is tested against a routing matrix that asserts: each strategy is invoked with the correct parameter shape; the minWedgeComplexity check is performed per strategy, not globally; and the WASM/JavaScript dispatch decision is made by the threshold ADR's rule, not by a hardcoded if in the orchestrator. A test fixture registers a synthetic strategy with a known threshold and asserts the routing behaviour, independent of the three production strategies. This test is the guard against orchestrator drift.
+
+
+2.1.3 Test-First Specification
+
+
+MirrorRadialStrategy is tested against the same geometric invariants as RadialStrategy: centre-point invariance, idempotence under point-order reversal, and degenerate-input safety. The additional invariant is that the mirror reflection preserves distances from the centre and that alternate mode produces the documented interlocking pattern for a known fixture.
+
+
+FractalStrategy is tested at the pure-function level before any canvas involvement: expand('F', { F: 'F+F-F-F+F' }, 1) produces the expected string; turtleSegments() produces the expected segment array for the Koch curve fixture. The radial expansion of the generated segments is tested against the RadialStrategy test vectors, confirming the composition is correct.
+
+
+Canvas-level tests (Vitest Browser Mode) assert that switching strategies does not remount the Konva Stage, does not lose committed geometry, and does not trigger a full store reset. The live region is not tested in this sprint — accessibility completion is Sprint 4.2.
+
+
+2.1.4 Sprint 4.1 Exit Criterion
+
+
+Three strategies are selectable and functional. The orchestrator source file has zero strategy-specific branches — routing is data-driven. The fractal pure-function test suite passes. The compound control panel renders strategy-specific parameters without conditional branches in the panel component itself. Committed geometry survives strategy switching.
+
+
+---
+
+
+3. Sprint 4.2 — Accessibility Completion and PWA Delivery
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Sprint 4.1 exit criterion satisfied and reviewed.
+
+
+3.2.1 Sprint Objective
+
+
+Complete the accessibility surface to the Phase 1 contract: synchronised parametric fallback content, debounced live-region announcements, full keyboard operability for every interactive element including the canvas surface, and a manual screen-reader verification pass. Deliver the Progressive Web App shell with the service-worker caching strategy specified in Phase 1, including offline verification.
+
+
+3.2.2 Task Breakdown
+
+
+Task 4.2.A — Parametric Fallback Content Synchronisation
+
+
+The <canvas> element receives fallback content that describes the mandala parametrically. A critical nuance from the accessibility research must be respected: fallback content inside <canvas> tags is not reliably read by modern assistive technology when canvas rendering succeeds — it is a fallback for unsupported canvas, not a screen-reader path. The fallback content is therefore mirrored in a visible-or-sr-only DOM element adjacent to the canvas, and the canvas itself carries role="img" with an aria-describedby pointing to the mirror.
+
+
+The parametric description includes: symmetry order and strategy name, number of committed strokes, active palette name and colourblind-safe status, active colour hex, stroke style (dash and width), and the fractal generation count if the fractal strategy is active. The description is generated from the Zustand store via a throttled subscription (500 ms during active drawing, immediate on commit or control change) and written to the mirror element. The mirror is aria-live="off"; announcements are handled separately by the live region (Task 4.2.B).
+
+
+Task 4.2.B — Debounced Live Region
+
+
+A visually hidden role="status" element with aria-live="polite" and aria-atomic="true" is placed at the application root, positioned logically in the DOM (not merely appended to <body>) so that screen-reader navigation reaches it in a sensible order. The Phase 4 accessibility guidance is explicit on two points: the live region must remain visible in the accessibility tree (some screen readers do not detect regions that are removed and reinserted), and the Live value must not be changed dynamically (some screen readers do not detect the transition).
+
+
+Announcements are triggered by significant state changes only: symmetry order change, strategy change, palette change, tool change, fractal generation change, and export completion. Each announcement is debounced at 300 ms. Individual stroke commits are not announced — they occur at drawing frequency and would flood the auditory channel. Announcement text is pre-composed (not assembled per-announcement) to avoid string-concatenation latency on the announcement path.
+
+
+Task 4.2.C — Full Keyboard Operability and Canvas Point Placement
+
+
+Every control in the compound panel is keyboard operable: sliders respond to arrow keys, toggle groups to Space/Enter, palette selection to arrow-key navigation within a radio group. The canvas surface itself gains a keyboard point-placement mode: a visible focus indicator on the canvas, arrow keys to move a crosshair cursor, Enter to commit a point, Escape to cancel the in-progress wedge. The crosshair position is announced via the live region on each arrow-key step (debounced at 300 ms), so a screen-reader user can place points with positional feedback.
+
+
+The keyboard mode is not a separate code path for geometry — it writes to the same wedge-accumulation state as pointer input, and commits through the same commitStroke action. The only divergence is the input event source.
+
+
+Task 4.2.D — Progressive Web App Shell and Offline Verification
+
+
+The service worker is implemented with Workbox and integrated via vite-plugin-pwa. The caching strategy is the Phase 1 specification, and it is non-negotiable:
+
+
+Asset class Strategy Rationale
+.wasm binary Cache-first, content-hashed Immutable per build; largest asset; compiled-code cache must not be defeated
+HTML Network-first Application shell freshness
+JS/CSS Stale-while-revalidate Instant load, background refresh
+
+
+The manifest.json declares the application name, icons, theme colour, display mode (standalone), and start URL. The service worker is registered in the application entry point, and an “Update available — reload” banner is exposed when a new build is detected. Offline verification is a manual test: load the application, generate a mandala, disconnect the network, reload, and confirm that the application shell, the WASM module (if previously loaded), and the canvas interaction all function without network access.
+
+
+Task 4.2.E — Threading Decision ADR (SharedArrayBuffer Deferral)
+
+
+The Phase 3 deferral of SharedArrayBuffer and WASM threads is revisited in this sprint with the fractal workload now in scope. The research confirms that threaded WASM requires SharedArrayBuffer and therefore COOP/COEP headers on every page that imports the threaded module, and that these headers lock the application out of third-party iframes that do not opt in (embedded checkout, some auth providers). The measured speedup data for comparable workloads shows that threading pays off for batch operations (1.81× for boolean cut grids) but loses on tiny operations (0.44× for a two-shape fuse, where pool overhead dominates).
+
+
+The ADR records the decision: SharedArrayBuffer and WASM threads are not adopted in Phase 4. The fractal workload is a single-user-interaction-triggered expansion (one generation per parameter change), not a batch pipeline; the measured Phase 3 worker overhead already absorbs the latency, and the COOP/COEP cost (third-party iframe exclusion) is not justified by the expected speedup. The decision is revisitable if Phase 5 profiling shows a queueing bottleneck, but the default remains single-threaded with transferable buffers.
+
+
+3.2.3 Sprint 4.2 Exit Criterion
+
+
+The accessibility audit passes: every control is keyboard operable; the live region announces the documented significant state changes without flooding; the parametric fallback is synchronised and exposed via aria-describedby on the canvas. A manual screen-reader pass (NVDA or VoiceOver) confirms that a user can understand the mandala state and change symmetry order, strategy, and palette without seeing the canvas. The PWA installs, the service worker caches the WASM binary under the cache-first strategy, and offline generation and export function after network disconnection. The threading deferral ADR is ratified and merged.
+
+
+---
+
+
+4. Cross-Sprint Concerns
+
+
+4.1 Strategy Interface Integrity
+
+
+The Phase 4 exit criterion explicitly requires that the orchestrator source file has zero strategy-specific branches. This is the operational test of the Strategy Pattern's value. If the team finds itself adding if (strategyId === 'fractal') to the orchestrator, the interface is insufficient and must be amended with an ADR — the branch is a symptom, not a solution.
+
+
+4.2 Performance Regression Watch
+
+
+The fractal strategy introduces a new performance profile: string-rewriting is exponential in generations, and turtle interpretation is linear in segment count. The Phase 3 benchmark harness is extended with fractal-specific cells (generations 1–6 across the three presets). If generations ≥ 5 consistently exceed the 50 ms rule in JavaScript, the team records the data and schedules a WASM fractal implementation for Phase 5; it does not pre-emptively build the WASM version without the measurement.
+
+
+4.3 Accessibility Testing Discipline
+
+
+Automated axe checks catch structural ARIA errors but cannot verify that announcements are useful and non-flooding. The manual screen-reader pass at Sprint 4.2 close is not optional. The test script is documented: load the app with a screen reader running, change symmetry order via keyboard, place a point in keyboard mode, switch strategy, select a palette, and export; confirm that each significant change is announced once, with meaningful content, and that the parametric description is available on focus.
+
+
+4.4 Risk Watch for Phase 4
+
+
+Risk Trigger Response
+Orchestrator drift toward strategy-specific branches PR adds if (strategyId …) to orchestrator Reject at review; interface amendment ADR or composition via strategy params
+Fractal generation freezes the main thread Generation ≥ 6 in JavaScript Extend benchmark; cap UI generations at 5 with a warning; schedule WASM fractal for Phase 5 if data justifies
+Live region floods during slider drag Announcement fires per value change Verify 300 ms debounce; confirm only significant changes trigger; test with real screen reader
+Service worker serves stale WASM after update Cache-first strategy with non-hashed filename Content-hashed filenames mandatory; “update available” banner; staged rollout
+COOP/COEP not required but accidentally added Deployment config copy-paste from another project ADR confirms deferral; CI check asserts headers are absent unless threading is activated
+
+
+---
+
+
+5. Handoff to Phase 5
+
+
+Phase 5 (Polish, Hardening, and Release Readiness) delivers the performance regression suite, bundle discipline, cross-browser validation, and the release candidate. The Phase 4 work hands Phase 5: three validated symmetry strategies, a completed accessibility surface with a manual verification record, a functioning PWA with offline capability, and the threading deferral ADR that Phase 5 must respect unless its own profiling contradicts it.
+
+
+The Phase 5 sprint plan will reference the Phase 4 accessibility verification record as the baseline against which any regression is measured. No architectural renegotiation is expected at the Phase 5 boundary; the strategy interface, the state architecture, and the WASM adoption rule are all now validated across three strategies and two execution environments.
+
+
+---
+
+
+End of Phase 4 Document. Phase 5 will follow as the next sequential communication.
+Document ID: MANDALA-PH5-RELEASE-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Executable Specification — Release Candidate Gate
+Supersedes: None
+References: MANDALA-PH1-STRAT-001, MANDALA-PH2-SPRINT-001, MANDALA-PH3-WASM-001, MANDALA-PH4-CREATIVE-001
+Inherits from Phase 4: Three validated symmetry strategies (Radial, MirrorRadial, Fractal), the accessibility verification record, the functioning PWA with offline capability, the threading deferral ADR, and the Phase 3 threshold ADR governing WASM activation.
+
+
+---
+
+
+1. Phase 5 Charter
+
+
+1.1 Purpose
+
+
+Phase 5 converts the functionally complete application into a release candidate with enforced quality gates. The governing principle is that Phase 5 does not introduce new product features; it introduces automated guardrails that make regressions visible and blocking before they reach users. Every gate defined here is a CI-enforced threshold, not a checklist item.
+
+
+The phase is structured as two sprints. Sprint 5.1 builds the performance regression suite, bundle discipline, and the Lighthouse/axe CI pipeline. Sprint 5.2 executes the cross-browser validation matrix, verifies the service-worker update flow in a production configuration, completes documentation, and produces the release candidate.
+
+
+The Phase 1 performance contract (≥ 50 fps on the benchmark device), the Phase 3 WASM size budget, the Phase 4 accessibility verification record, and the Phase 4 threading deferral ADR are all treated as immutable inputs unless a measured contradiction is documented in a new ADR.
+
+
+1.2 Phase 5 Exit Criterion (Cumulative)
+
+
+At the close of Sprint 5.2: all CI gates defined in this document are enforced and green on the release candidate; the cross-browser matrix (Chromium, Firefox, Safari desktop; Chrome Android; Safari iOS) passes the functional and accessibility smoke suite; the service-worker update flow is verified end-to-end with a staged rollout; the bundle and WASM size budgets are enforced and the release candidate is within budget; and the documentation package (architecture overview, runbook, accessibility statement) is complete.
+
+
+---
+
+
+2. Sprint 5.1 — Performance Regression Suite, Bundle Discipline, and Automated Accessibility Gate
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Phase 4 exit criterion satisfied and reviewed; the accessibility verification record and threading deferral ADR merged.
+
+
+2.1.1 Sprint Objective
+
+
+Establish the CI-enforced guardrails that prevent silent regression. This sprint delivers the performance benchmark suite with baseline comparison, the bundle-size and WASM-size gates, the Lighthouse CI configuration with score thresholds and resource budgets, and the axe-core accessibility scan integrated into the Playwright E2E pipeline. The sprint is complete when every gate fails a deliberately regressed commit and passes the current baseline.
+
+
+2.1.2 Task Breakdown
+
+
+Task 5.1.A — Performance Benchmark Suite with Baseline Comparison
+
+
+The benchmark harness from Phase 3 is promoted from a manual artifact to a CI-enforced regression gate. The suite runs on every pull request against a pinned runner class and compares against a committed baseline file. The comparison rule is: fail the build if any tracked metric regresses by more than 15% against the baseline median. This threshold is drawn from established practice: a 15% regression tolerance catches meaningful drift while absorbing runner variance, and the baseline must be regenerated (with a documented justification) when a deliberate performance trade-off is accepted.
+
+
+The tracked metrics are the ones that matter for this application's interactive contract: end-to-end expansion time at N=8/12/24/36/48 across the three complexity tiers, frame time during a simulated drag at N=8 and N=24, and the WASM boundary round-trip cost. The suite records main-thread metrics (script time, layout count, node count) rather than GPU-dependent paint metrics, because CI runners use SwiftShader and have no GPU — budgeting gpuMs or paintMs in CI produces meaningless noise. The benchmark JSON artifact is committed to benchmarks/baseline.json and the diff is rendered in the PR comment.
+
+
+Task 5.1.B — Bundle-Size Gate with size-limit
+
+
+Without an explicit budget, bundle size grows 5–15% per quarter as dependencies and features accumulate, and by the time slowness is noticeable the bundle is 2–3× larger than necessary. The gate is implemented with size-limit, which fails the CI build when any tracked bundle exceeds its declared budget. The configuration follows the established budget targets for a mobile-first application:
+
+
+Tracked asset Budget (gzipped) Rationale
+Initial entry bundle (excluding React vendor chunk) 200 KB Mobile-first initial payload target
+Route/feature chunks 100 KB each Prevents single-feature bloat
+React vendor chunk 120 KB React + React-DOM baseline
+WASM binary (.wasm file, brotli) 200 KB Phase 3 provisional budget, confirmed or tightened from measured size
+
+
+The manualChunks configuration separates React and the WASM loader into distinct chunks so that a regression in one does not mask a regression in the other. rollup-plugin-visualizer is wired behind an ANALYZE=true flag for manual treemap inspection when a budget is breached. The CI step runs npx size-limit and exits non-zero on breach.
+
+
+Task 5.1.C — WASM Binary Size Enforcement
+
+
+The .wasm artifact is subject to the same budget discipline as JavaScript. The build pipeline executes wasm-opt -Oz as a mandatory post-compilation step, with --strip-debug and --enable-bulk-memory where supported. The optimization pipeline is: cargo build --release with the Phase 3 profile (opt-level = "z", lto = true, codegen-units = 1, panic = "abort", strip = true), followed by wasm-opt -Oz, followed by wasm-strip. This combination has been documented to reduce binaries by 15–30% beyond the Rust profile flags alone, and the panic = "abort" setting removes the panic-unwinding machinery for a further ~30% reduction. The final size is asserted against the 200 KB budget in CI; a breach fails the build and the PR must either justify a budget amendment via ADR or reduce the module surface.
+
+
+twiggy is configured as a size profiler for diagnosis: when the budget is breached, the CI job runs twiggy top on the .wasm artifact and attaches the output to the build log, identifying which Rust dependencies contribute most to the size.
+
+
+Task 5.1.D — Lighthouse CI with Score and Resource Budgets
+
+
+Lighthouse CI (@lhci/cli) runs against the production build on every push and pull request, with the configuration enforcing three categories of thresholds:
+
+
+Category Threshold Enforcement
+Performance Score ≥ 0.90 Error — blocks merge
+Accessibility Score ≥ 0.95 Error — blocks merge
+Best practices Score ≥ 0.90 Warning — recorded, non-blocking
+Resource budget: script ≤ 35 KB per resource type Warning — visible in report
+
+
+Lighthouse 12 removed the PWA category, and Lighthouse 13 is not yet supported by LHCI 0.15.x; the PWA verification is therefore handled manually in Sprint 5.2 (offline reload and install prompt), not via Lighthouse. The Lighthouse run is configured against the mobile preset with simulated throttling, matching the mobile-first budget rationale. Reports are persisted as build artifacts so developers can inspect detailed findings without rerunning locally. The lhci healthcheck --fatal step runs first to verify Chrome and configuration availability before the audit.
+
+
+Task 5.1.E — axe-Core Accessibility Scan in the E2E Pipeline
+
+
+The axe-core scan is integrated into the existing Playwright E2E step rather than as a separate CI job, keeping the pipeline length flat. The scan targets the application's key views: the canvas in its default state, the canvas with an active fractal strategy, the control panel in keyboard focus order, and the export flow. The rule set is constrained to WCAG 2.1 A and AA tags; AAA rules are excluded because they produce noise the project has not committed to remediating.
+
+
+The gating rule follows the severity discipline established in the accessibility literature: only violations with impact: 'critical' or impact: 'serious' on WCAG A/AA criteria block the build. Moderate and minor violations are logged to the technical-debt register with an owner and a review date, but do not fail CI. This prevents the gate from being circumvented because of irrelevant low-impact noise. Known false positives and deliberate exclusions (e.g., a legacy widget) are recorded in an exemption list with an expiration date and a named owner; an exemption without an owner is itself a CI failure. The axe-core version is pinned (4.12.x is the current stable recommendation with mature rule coverage and low false-positive noise).
+
+
+The scan does not replace the manual screen-reader pass from Phase 4. Automated engines catch structural violations (contrast, missing labels, ARIA validity) but cannot verify that announcements are useful and non-flooding. The Phase 4 manual record remains the qualitative baseline; axe-core is the regression guard.
+
+
+2.1.3 Sprint 5.1 Exit Criterion
+
+
+The performance benchmark suite fails a synthetic 20% regression and passes the current baseline. size-limit fails a synthetic 10% bundle increase. The WASM binary is within the 200 KB budget after wasm-opt -Oz and wasm-strip. Lighthouse CI runs against the production build with the specified thresholds and produces a persisted report. The axe-core scan runs inside the Playwright E2E step, blocks on critical/serious A/AA violations, and the exemption list is initialised with at least one documented entry (to prove the mechanism works). All gates are green on the current main branch.
+
+
+---
+
+
+3. Sprint 5.2 — Cross-Browser Validation, Service-Worker Update Flow, and Release Candidate
+
+
+Duration: 2 weeks (10 working days)
+Depends on: Sprint 5.1 exit criterion satisfied and reviewed.
+
+
+3.2.1 Sprint Objective
+
+
+Validate the application across the target browser matrix, verify the service-worker update and cache-invalidation flow end-to-end in a production configuration, complete the documentation package, and produce the release candidate. This sprint does not add features; it proves that the features delivered in Phases 2–4 behave correctly across the delivery surface and that the update path is safe.
+
+
+3.2.2 Task Breakdown
+
+
+Task 5.2.A — Playwright Cross-Browser Matrix
+
+
+The Playwright configuration is structured with projects for each target environment, sharing common options under use and overriding only what differs. The target matrix is:
+
+
+Project Device / Browser Priority
+chromium-desktop Desktop Chrome Primary
+firefox-desktop Desktop Firefox Primary
+webkit-desktop Desktop Safari engine Primary
+chrome-mobile Pixel 5 emulation Primary
+safari-mobile iPhone 13 emulation (WebKit) Primary
+
+
+The CI configuration uses forbidOnly: true to reject stray test.only, retries: 2 to absorb genuine infrastructure hiccups (not to mask flakiness), and workers: 1 in CI for deterministic ordering; locally, workers are auto-selected and test.only is allowed for fast iteration. Trace capture is set to on-first-retry so that a retried test carries a step-by-step screenshot timeline for diagnosis.
+
+
+The smoke suite executed across the matrix is deliberately narrow and high-signal: application load, canvas pointer interaction, symmetry-order change, strategy switch (including the fractal preset), palette selection, PNG export, SVG export, and the keyboard point-placement mode. The accessibility scan from Sprint 5.1 runs on the Chromium project only; axe-core results are engine-dependent for a small number of rules, and gating on Chromium provides a stable baseline while the full matrix is used for functional behaviour.
+
+
+Task 5.2.B — Service-Worker Update Flow Verification
+
+
+The service-worker lifecycle is the highest-risk delivery surface: the documented production failures are not “cache not working” but “cache too effective” — users stuck on a stale version because index.html was cache-first, or a skipWaiting() firing while a user is mid-form and causing lazy-chunk 404s and a white screen. The verification is therefore not a unit test but an end-to-end staged update test in a production-like configuration.
+
+
+The cache boundary follows the three-class model established in the service-worker engineering literature:
+
+
+Resource class Strategy Rationale
+Fingerprinted assets (.wasm, hashed JS/CSS) Cache-first URL changes when content changes; cache never goes stale
+Entry documents (index.html, manifest.json, SW script) Network-first with a 3-second timeout, falling back to cache URL is stable but content changes per release
+Idempotent GET data Stale-while-revalidate Fresh enough, instant response
+
+
+The update flow is user-controlled, not automatic. The new service worker installs and enters the waiting state; skipWaiting() is not called during install. The page listens for updatefound, detects the installed state with an existing navigator.serviceWorker.controller, and surfaces an “Update available — reload” banner. Only on user confirmation does the page post SKIP_WAITING to the waiting worker, and the controllerchange handler performs a single reload guarded by a flag to prevent the documented double-reload loop. The activate handler deletes all caches whose version key does not match the current version, and the cache name is versioned per release.
+
+
+The verification script simulates the production sequence: install build A, open the application, deploy build B to the test host, trigger the update check, confirm the banner appears, click reload, and confirm that build B's assets are served and no lazy chunk 404s occur. The test asserts that the old caches are deleted on activate and that the new fingerprint assets are present. This test is run in the Chromium project and recorded as a release artifact.
+
+
+Task 5.2.C — CSP and Security Header Verification
+
+
+The production Content Security Policy is validated in a deployed configuration. The policy is restrictive: script-src 'self' 'wasm-unsafe-eval', worker-src 'self', object-src 'none', base-uri 'self', default-src 'self'. The 'wasm-unsafe-eval' directive is the narrow permission that allows WebAssembly instantiation without granting general eval() capability; the broader unsafe-eval is not used because target browsers support the narrower directive. The verification confirms that the WASM module instantiates under this policy and that no CSP violations appear in the browser console during a full functional pass.
+
+
+The security posture for WASM follows the established guidance: the module is built from source under the project's control, the artifact is served from the application origin (no CDN), and the JavaScript/WASM boundary validates the typed-array shapes and lengths on both sides. The module cannot access the DOM, filesystem, or network directly; its only reach into the page is through the explicitly imported glue. The build pipeline pins wasm-bindgen, wasm-pack, and wasm-opt versions, and the Rust toolchain is pinned via rust-toolchain.toml.
+
+
+Task 5.2.D — Documentation Package and Release Candidate
+
+
+The documentation package delivered with the release candidate comprises:
+
+
+· Architecture overview: the four ADRs from Phase 1 (rendering, WASM adoption, state, accessibility), the Phase 3 threshold ADR, the Phase 4 threading deferral ADR, and the Phase 2 zundo-versus-custom decision. Each ADR states the decision, the alternatives considered, and the conditions under which the decision should be revisited.
+· Runbook: benchmark baseline regeneration procedure, size-budget amendment procedure, service-worker update rollback procedure, and the exemption-list review cadence (every sprint; expired exemptions are removed or renewed with justification).
+· Accessibility statement: the WCAG 2.1 AA conformance level, the automated gate coverage (axe-core rule set and exclusions), and the manual verification record from Phase 4 with the screen-reader environment used.
+· Release notes: the three strategies, the export formats, the palette set including Okabe-Ito, the PWA/offline capability, and the known limitation at the pixel-buffer escape hatch (event-opaque rendering at N=48 with dense wedges, selection available on the committed layer).
+
+
+The release candidate is tagged, the CI gates from Sprint 5.1 are green on the tag, the cross-browser matrix from Task 5.2.A is green, and the service-worker update verification from Task 5.2.B is recorded.
+
+
+3.2.3 Sprint 5.2 Exit Criterion
+
+
+The cross-browser smoke suite passes on all five projects. The service-worker update flow is verified end-to-end with the user-controlled reload and cache deletion confirmed. The CSP allows WASM instantiation with no console violations. The documentation package is complete and reviewed. The release candidate tag is green on every CI gate defined in Phase 5.
+
+
+---
+
+
+4. Cross-Sprint Concerns
+
+
+4.1 Performance Baseline Integrity
+
+
+The baseline file is a committed artifact and is treated as code: it is reviewed in pull requests, and a baseline update requires a justification in the commit message (either “deliberate trade-off accepted” with a link to the relevant ADR, or “infrastructure change” with the runner class noted). The 15% regression threshold is not adjustable per-PR; adjusting it is a policy change that requires an ADR amendment.
+
+
+4.2 Gate Bypass Discipline
+
+
+Every gate defined in Phase 5 is enforceable on the main branch. A developer cannot merge with a failing gate by force-push or by disabling the CI job; the branch protection rules require the gate to pass. If a gate produces a false positive, the remedy is an exemption with an owner and an expiration date, not a disabled check. An exemption that expires without renewal fails the build.
+
+
+4.3 Risk Watch for Phase 5
+
+
+Risk Trigger Response
+Benchmark runner variance causes false regression CI runner class drift or noisy neighbour Pin runner class; use median of 50 runs; 15% threshold absorbs noise; regenerate baseline only with documented justification
+Lighthouse score instability on mobile throttling Network simulation variance Run 3 times, use median; thresholds at 0.90/0.95 provide margin; persist reports for inspection
+axe-core false positive blocks release Rule flags a pattern that is intentionally implemented Add to exemption list with owner and expiry; do not disable the rule globally
+Service-worker update banner never appears Browser caches the SW script aggressively Verify Service-Worker-Allowed header and that the SW script itself is served network-first with a short Cache-Control max-age
+WebKit (Safari) diverges on WASM instantiation or worker behaviour Platform-specific limitation WebKit project is in the matrix; if a divergence is confirmed, document it and gate the feature with capability detection rather than engine sniffing
+WASM budget breach after a Rust dependency update Transitive dependency growth twiggy top diagnosis; feature-gate or replace the dependency; budget amendment only via ADR
+
+
+---
+
+
+5. Project Closure and Post-Release Handoff
+
+
+Phase 5 closes the five-phase delivery programme. The post-release operating model is defined here so that the release is not the end of the engineering discipline:
+
+
+· Performance regression suite runs on every PR. Lighthouse CI runs on every push and PR. axe-core runs inside the Playwright E2E step. Cross-browser smoke runs on PRs to main and on the nightly schedule.
+· The benchmark baseline is reviewed at each release cycle; the 15% threshold and the size budgets are the stable contract.
+· The exemption lists (axe-core, bundle budgets if applicable) are reviewed every sprint; expired exemptions are removed.
+· The threading deferral ADR from Phase 4 is revisited if profiling on production traffic shows a queueing bottleneck at the fractal generation path; the COOP/COEP cost remains the barrier to adoption and must be re-justified before any reversal.
+· The WASM Component Model is monitored for browser-native support; the strategy interface remains the migration seam if adoption becomes viable.
+
+
+The release candidate produced in Sprint 5.2 is the first shippable artifact of the programme. All subsequent work is governed by the gates established here rather than by the phase discipline that preceded them.
+
+
+---
+
+
+End of Phase 5 Document. This concludes the five-phase specification programme.
+Document ID: MANDALA-PH6-APPENDIX-001
+Version: 1.0
+Classification: Internal — Development Team Distribution
+Status: Closing Supplement — Engineering Reference
+Supersedes: None
+References: MANDALA-PH1-STRAT-001 through MANDALA-PH5-RELEASE-001
+
+
+---
+
+
+1. Purpose and Position in the Document Set
+
+
+Phases 1–5 established the what, the why, and the when of the mandala application: the architecture, the five-phase roadmap, the sprint-level executables, and the release-candidate gates. Phase 6 does not introduce new product scope. It delivers the cross-cutting engineering reference that a development team needs to work inside the architecture without violating it — the patterns and anti-patterns, the typing discipline, the serialisation contracts, the protocol boundaries, the registries and hierarchies, the maps and dictionaries, and the idioms that distinguish idiomatic code from code that merely compiles.
+
+
+The document is organised as a reference appendix, not a narrative. Sections 2–11 are independently consultable. Section 12 states the consolidated conclusions for the team. Every rule that is marked FORBIDDEN or MANDATORY is a gate-level requirement consistent with the Phase 5 CI enforcement; it is not advisory.
+
+
+---
+
+
+2. Type Discipline: Discriminated Unions, Exhaustiveness, and Runtime Validation
+
+
+2.1 The Core Pattern: Discriminated Unions
+
+
+The single most consequential TypeScript pattern for this application is the discriminated union (also called a tagged union or sum type). A discriminated union uses a common literal property — conventionally type, kind, or status — to distinguish between variant shapes, and TypeScript narrows the type automatically when that property is checked. The pattern is transformative for state management because it makes illegal states unrepresentable: instead of a single interface with optional fields that may all be undefined simultaneously, each variant carries exactly the data that variant requires.
+
+
+The application's canonical discriminated unions are:
+
+
+SymmetryStrategy parameters. The strategy union is discriminated on strategyId:
+
+
+```typescript
+type SymmetryParams =
+  | { strategyId: 'radial'; order: number }
+  | { strategyId: 'mirror-radial'; order: number; mirrorMode: 'reflect' | 'alternate' }
+  | { strategyId: 'fractal'; preset: FractalPreset; generations: number; angle: number };
+```
+
+
+Store action union. Every Zustand action is a variant of a single MandalaAction discriminated union, typed as { type: 'COMMIT_STROKE'; payload: WedgeStroke } | { type: 'SET_SYMMETRY'; order: number } | { type: 'SET_STRATEGY'; params: SymmetryParams } | …. The reducer switches on action.type and the compiler narrows action.payload per branch.
+
+
+Async operation state. Any operation that crosses the WASM boundary or the export path models its state as { status: 'idle' } | { status: 'pending' } | { status: 'success'; data: T } | { status: 'error'; error: Error }. This is the same shape used in the useFetch reference pattern and is the recommended alternative to three or four parallel useState calls with optional fields.
+
+
+FORBIDDEN: A state interface with data?: T; error?: Error; loading?: boolean where the three fields can be simultaneously inconsistent. Replace with a discriminated union.
+
+
+2.2 Exhaustiveness: The never Assertion
+
+
+TypeScript will not error on an incomplete switch over a union when the function returns void. The remedy is the exhaustiveness check: a default branch that assigns the narrowed value to a never-typed variable. If a new variant is added to the union and the switch is not updated, the assignment fails to compile.
+
+
+```typescript
+function assertNever(x: never): never {
+  throw new Error(`Unhandled variant: ${JSON.stringify(x)}`);
+}
+
+
+switch (action.type) {
+  case 'COMMIT_STROKE': return handleCommit(action.payload);
+  case 'SET_SYMMETRY': return handleSymmetry(action.order);
+  // …
+  default: return assertNever(action);
+}
+```
+
+
+MANDATORY: Every switch over a discriminated union in features/mandala/ must terminate with an assertNever call in the default branch. The pattern combines compile-time and runtime guarantees: the compiler catches the missing case, and the runtime throws a descriptive error if an untyped value reaches the switch from a JavaScript boundary.
+
+
+Anti-pattern to avoid: an enum-based strategy where the parameter shape is not tied to the enum value. If strategyId: 'fractal' can coexist with a mirrorMode field, the union is not discriminated and the compiler cannot help.
+
+
+2.3 Runtime Validation at Boundaries: Zod
+
+
+TypeScript types exist only at compile time; JSON.parse returns any and TypeScript cannot verify that runtime data matches the annotated type. Every boundary where data enters the application — the service-worker cache, localStorage persistence, the worker message channel, any future import feature — must be validated at runtime.
+
+
+Zod is the recommended validation library for this project: it provides schema declaration, static type inference (z.infer<typeof Schema>), and safe parsing via .safeParse() that returns a discriminated result rather than throwing. The schema is the source of truth; the TypeScript type is derived from it, not duplicated. For the geometry exchange protocol, the schema validates the flat-array shapes and lengths before the main thread reconstructs WedgeStroke objects.
+
+
+MANDATORY: No as SomeType assertion on data that crosses a runtime boundary. Use Schema.parse() or Schema.safeParse() at the boundary and narrow from the result. The only permitted assertion is on a value the compiler has already proved and the assertion merely restates (e.g., a non-null assertion after an explicit null check).
+
+
+2.4 Result-Type Error Handling
+
+
+Throwing is appropriate for truly exceptional conditions — a violated invariant, an unrecoverable infrastructure failure. It is not appropriate for anticipated, recoverable failures such as a validation failure or an empty-wedge expansion. The Result<T, E> pattern returns a discriminated union of success and failure, forcing the caller to handle both branches.
+
+
+The project uses a minimal, dependency-free Result type (or neverthrow if the team prefers a library; the semantic contract is identical):
+
+
+```typescript
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+```
+
+
+The expand() call on a strategy returns Result<WedgeStroke[], SymmetryError>, not a thrown exception. The assertNever-guarded switch handles both branches. React Suspense remains the exception to this rule: use() throws the Promise by contract, and the WasmErrorBoundary catches it — this is the framework idiom, not a violation of the Result discipline.
+
+
+---
+
+
+3. React and State: Patterns and Anti-Patterns
+
+
+3.1 Zustand Anti-Patterns (FORBIDDEN)
+
+
+The following patterns are drawn from consolidated Zustand practice and are treated as build-review-blocking defects:
+
+
+Anti-pattern Consequence Correct pattern
+Destructuring the entire store (const { a, b } = useStore()) Re-renders on any state change Selector per field: useStore(s => s.a)
+Storing derived state (total: 0 alongside items) Goes out of sync; two sources of truth Compute in a selector or useMemo at consumption
+Storing server state (fetched data, API caches) Duplicates the server cache; staleness bugs TanStack Query (or equivalent) for server state; Zustand for client-only state
+Direct mutation (state.items.push(item)) Bypasses change detection; DevTools miss updates Immutable update via set(state => ({ items: [...state.items, item] }))
+Using get() inside an action when set() callback suffices Extra read, race-prone under concurrent updates set(state => ({ count: state.count + 1 }))
+Deprecated shallow import Broken or removed in newer Zustand versions useShallow from zustand/react/shallow
+Monolithic store Every consumer subscribes to a superset of its needs Slice pattern: sceneSlice, paletteSlice, toolSlice, composed at create()
+
+
+MANDATORY: Zustand stores are composed from slices, each owning one domain. The canvas subscribes to sceneSlice only; the palette panel to paletteSlice only. No component subscribes to the composite store without a selector.
+
+
+3.2 React Anti-Patterns
+
+
+Prop drilling through more than two layers is the symptom that motivates either composition (pass the component, not the data) or Context when the value is genuinely cross-cutting. Context is for dependency injection, not for high-frequency state; the canvas stroke state is never lifted into Context.
+
+
+useEffect overuse is the most damaging anti-pattern in the codebase class. An effect that synchronises derived state (useEffect(() => setFiltered(items.filter(...)), [items])) is a bug: derived values are computed during render, not stored in state. An effect with missing dependencies creates stale closures; the fix is to include the dependency or use the updater form (setCount(c => c + 1)) to avoid capturing the stale value.
+
+
+useEffect is reserved for synchronisation with external systems — the canvas imperative surface, the worker message channel, the service-worker registration, and media queries. It is not a general-purpose computation hook.
+
+
+Memoisation overuse is its own anti-pattern: useMemo and useCallback are applied where profiling shows a real cost, not blanket-applied to every value. React Compiler (React 19+) absorbs much of this automatically; manual memoisation that duplicates the compiler's work adds noise without benefit.
+
+
+3.3 Component and Hook Idioms
+
+
+· Functional components only. No class components in new code; React 19 rewards composition, hooks, and Suspense-aware patterns.
+· One concern per component. A component exceeding roughly 100 JSX lines is extracted into a sub-component. This is a soft threshold, not a CI gate.
+· Compound components for the control panel. The parent provides context; sub-components consume only their slice. The public API is <MandalaControls.Symmetry />, <MandalaControls.Palette />, etc.
+· Custom hooks encapsulate boundary access. useWasmEngine() wraps the worker lifecycle; useMandalaStore(selector) wraps the Zustand access with the correct selector. Components never touch postMessage or the raw store.
+· useOptimistic for instant UI feedback where the operation is likely to succeed and the rollback is cheap (e.g., palette selection reflecting immediately before the store commit settles).
+
+
+---
+
+
+4. WebAssembly: Memory, Serialisation, and Protocol Discipline
+
+
+4.1 Memory Ownership Is Manual
+
+
+JavaScript has a garbage collector; WebAssembly does not. Any type created in WebAssembly must be explicitly deleted to reclaim memory, and failure to call .delete() on a WASM-allocated object is a memory leak. The Rust wasm-bindgen glue generates a .free() or .delete() method on every exported struct; the JavaScript side must call it on component unmount, on stroke replacement, and on module teardown.
+
+
+MANDATORY: Every WASM-allocated object is held in a React ref or a module-level registry, never in a closure that outlives the owning component without a disposal path. The useEffect cleanup function is the canonical disposal site. FinalizationRegistry is not used as the primary cleanup mechanism: its callbacks are non-deterministic in timing, and the platform guidance explicitly recommends explicit disposal (using/Symbol.dispose or manual .delete()) over relying on finalisation.
+
+
+4.2 The Serialisation Contract
+
+
+The JS↔WASM boundary is a serialisation boundary, not a function call. The performance data is unambiguous: the dominant cost in naive integrations is object marshalling (serialising structured data into JsValue and back), not computation. The application's contract avoids this cost entirely by using flat typed arrays:
+
+
+Direction Payload Format Transfer
+JS → WASM Wedge points Float64Array of [x0, y0, x1, y1, …] postMessage with Transferable
+WASM → JS Expanded geometry Float64Array (coordinates) + Uint32Array (per-stroke lengths) postMessage with both Transferable
+
+
+No strings cross the boundary. No objects cross the boundary. Stroke metadata (colour, width, dash, opacity) never enters WASM — it is invariant under rotation and is reattached on the JavaScript side after the geometry returns. This is the zero-copy discipline: the input buffer is transferred, not copied, and the main thread relinquishes ownership at the postMessage call.
+
+
+For a future need to transfer heterogeneous structured data (not currently required), FlatBuffers is the documented choice over JSON or JsValue serialisation: it provides a lightweight, zero-copy-readable format specifically designed for the WASM sandbox boundary. It is not adopted in the current phases; it is recorded here as the escalation path if the flat-array contract proves insufficient.
+
+
+4.3 The Worker Message Protocol (Registry)
+
+
+The protocol is a closed, typed message set. Every message has a type literal, and the handler switches exhaustively on that literal with an assertNever default (Section 2.2). The registry is:
+
+
+type Direction Payload fields Transferables Response
+INIT main → worker — — READY
+EXPAND main → worker points: Float64Array, order: number [points.buffer] EXPANDED or ERROR
+RENDER_TO_BUFFER main → worker segments: Float64Array, width: number, height: number [segments.buffer] BUFFER or ERROR
+DISPOSE main → worker — — DISPOSED
+
+
+FORBIDDEN: adding a message type without updating the exhaustive handler and the registry table in the same pull request. The registry is the contract; drift between the registry and the handler is a defect.
+
+
+4.4 Threading: SharedArrayBuffer and COOP/COEP (Deferred, Governed)
+
+
+SharedArrayBuffer is gated behind cross-origin isolation: the host must send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp (or credentialless). The cost is not merely configuration: these headers lock the application out of third-party iframes that do not opt in, including embedded payment and authentication flows.
+
+
+The Phase 4 ADR deferred this adoption. Phase 6 restates the rule: COOP/COEP are not to be added to the deployment configuration unless the threading ADR is explicitly amended. The single-threaded worker with transferable buffers is the production configuration. Node 22+ exposes SharedArrayBuffer without headers for test purposes, but this is not a production path.
+
+
+---
+
+
+5. Serialisation, Persistence, and Data Shapes
+
+
+5.1 JSON Is Not Type-Safe by Default
+
+
+JSON.stringify silently transforms or removes values that TypeScript types cannot describe: undefined, functions, symbols, class instances, Map, Set, and methods are removed or degraded; a Date becomes an ISO string and stays a string after JSON.parse, even if the TypeScript type says Date. The application's persisted shape (the mandala document for localStorage or the export file) must therefore be explicitly modelled as a serialisable type, with dates stored as ISO strings and parsed back explicitly, and every optional field distinguished from a null value.
+
+
+MANDATORY: The persisted schema is validated with Zod on read (Section 2.3). A failed validation is a Result error (Section 2.4), surfaced as a recoverable UI state ("saved document incompatible with this version"), not a crash.
+
+
+5.2 The Mandala Document Shape (Canonical Registry)
+
+
+The serialisable document is the single source of truth for persistence and export. Its shape is frozen for the release candidate and versioned:
+
+
+```
+MandalaDocument {
+  schemaVersion: 1;                         // integer, monotonic
+  symmetryOrder: number;                    // 3–48
+  strategy: SymmetryParams;                 // discriminated union (Section 2.1)
+  wedges: WedgeStroke[];                    // committed strokes
+  paletteId: string;                        // registry key (Section 6)
+  activeColour: string;                     // hex, validated against palette
+  activeDash: number[] | null;              // null = solid
+  activeStrokeWidth: number;
+  createdAt: string;                        // ISO 8601
+}
+```
+
+
+FORBIDDEN: adding a field to MandalaDocument without incrementing schemaVersion and writing a migration path. The schema version is a protocol, not metadata.
+
+
+5.3 PNG and SVG Export Contracts
+
+
+The PNG export captures a dedicated export Stage, never the interactive Stage; the guide overlay is structurally absent because it is a DOM sibling, not a Konva layer (Phase 2, Task 2.1.A). The SVG export serialises the geometry model directly, emitting either N absolute-coordinate <path> elements or one <defs> path with N <use> transforms — the smaller output wins, measured per document.
+
+
+Rule: the export path reads from the store and the geometry model, never from the canvas pixels. A pixel-derived export couples output quality to viewport size and device-pixel-ratio; a model-derived export is resolution-independent and testable without a browser.
+
+
+---
+
+
+6. Registries, Maps, and Dictionaries
+
+
+6.1 The Palette Registry
+
+
+Palettes are registered, not inline. Each entry is immutable:
+
+
+id name colourblindSafe colours
+okabe-ito Okabe-Ito true #000000, #E69F00, #56B4E9, #009E73, #F0E442, #0072B2, #D55E00, #CC79A7
+high-contrast High Contrast true to be ratified at Phase 5
+default Studio Default false to be ratified at Phase 5
+
+
+Rule: a palette ID is a stable key. Renaming a palette changes name, never id. A persisted document referencing an unknown paletteId resolves to default with a logged warning, not a validation failure.
+
+
+6.2 The Decision Registry (ADRs)
+
+
+ADR Decision Revisit condition
+PH1-RENDER React-Konva for interactive layer; imperative escape hatch for high object counts Object-count threshold breached without escape-hatch activation
+PH1-WASM WASM adopted at ≥ 50 ms, rejected at ≤ 10 ms Benchmark device class changes
+PH1-STATE Zustand slices + reducer; command-pattern history zundo incompatibility (resolved in Phase 2)
+PH1-A11Y Parametric fallback + debounced live region; canvas is visual presentation only content="drawable" browser support becomes universal
+PH3-THRESHOLD Per-strategy minWedgeComplexity from measured matrix New strategy added; measured data contradicts
+PH4-THREADING SharedArrayBuffer deferred; single-threaded worker + transferables Queueing bottleneck proven; COOP/COEP cost re-justified
+PH2-HISTORY zundo vs. custom command stack zundo snapshots capture transient pointer state
+
+
+Rule: a decision is changed by amending the ADR, not by editing the code and leaving the ADR stale. The ADR is the contract; the code is the implementation.
+
+
+6.3 The Hierarchy of State
+
+
+State is organised in a strict hierarchy, and each level has one owner:
+
+
+```
+Layer 0 — Ephemeral (component-local useState / useRef)
+            in-progress stroke points, pointer position, crosshair position
+Layer 1 — Session (Zustand slices)
+            committed wedges, symmetry order, active strategy, palette selection
+Layer 2 — Persisted (MandalaDocument, validated on read)
+            the serialisable snapshot; written on explicit save, not on every stroke
+Layer 3 — Derived (computed, never stored)
+            expanded geometry, export SVG, fallback description text
+```
+
+
+FORBIDDEN: storing Layer 3 anywhere. Derived state stored at Layer 1 or 2 is the Zustand "derived state" anti-pattern (Section 3.1) in a different dress.
+
+
+6.4 The Glossary (Canonical Dictionary)
+
+
+Term Definition Owning module
+Wedge The fundamental geometric unit transformed by a strategy features/mandala/geometry
+Expansion The application of N transforms to a wedge features/mandala/strategies
+Strategy An implementation of SymmetryStrategy features/mandala/strategies
+Orchestrator The routing layer that selects JS or WASM per strategy and complexity features/mandala/stores
+Threshold minWedgeComplexity, per strategy, from the Phase 3 ADR features/mandala/strategies
+Guide overlay DOM sibling of the canvas; never exported features/mandala/components
+Export surface Dedicated off-screen Stage for PNG capture features/mandala/export
+Fallback description Parametric text mirror of the visual mandala state features/mandala/accessibility
+Escape hatch Pixel-buffer render path at high object count wasm/ + features/mandala/rendering
+
+
+---
+
+
+7. Protocols, Rules, and Relations
+
+
+7.1 The Strategy Interface Contract
+
+
+The SymmetryStrategy interface is a protocol in the strict sense: any object that declares id, minWedgeComplexity, and expand() satisfying the signature is a valid strategy, regardless of whether it is implemented in JavaScript, Rust/WASM, or a test double. This is structural subtyping — the same principle that Python's Protocol expresses as "duck typing with static type checking," where a class qualifies by shape, not by nominal inheritance.
+
+
+Rule: the orchestrator never checks instanceof or a class name. It checks the declared minWedgeComplexity and dispatches. A new strategy is registered by adding an entry to the strategy map, not by modifying the orchestrator (Phase 4 exit criterion, Section 4.1).
+
+
+7.2 The Relationship Between Strategies and the Radial Engine
+
+
+FractalStrategy composes RadialStrategy rather than reimplementing radial expansion (Phase 4, Task 4.1.B). The relation is:
+
+
+```
+FractalStrategy.expand(wedge, order, params)
+  → L-system expansion (pure) → turtle segments (pure)
+  → RadialStrategy.expand(segments, order)   // delegated
+  → expanded geometry
+```
+
+
+Rule: a strategy that needs radial repetition delegates to RadialStrategy. Duplicating the rotation mathematics in a second strategy is a defect, not an optimisation.
+
+
+7.3 Feature-Sliced Design Boundaries
+
+
+The project structure follows the Feature-Sliced Design (FSD) methodology: layers ordered by scope of influence (app → pages → widgets → features → entities → shared), with slices inside each layer and segments (ui, model, lib, api) inside each slice. The import rule is downward only: a feature may import from entities and shared, never from a sibling feature, never upward from pages.
+
+
+FORBIDDEN: cross-feature imports bypassing the public API. If features/export needs something from features/mandala, it is exposed through features/mandala/index.ts, not by deep-importing features/mandala/internal/….
+
+
+---
+
+
+8. Security Posture
+
+
+The WASM sandbox provides strong isolation but is not an automatic security upgrade. Memory-unsafe languages compiled to WASM retain their memory vulnerabilities inside the sandbox; the sandbox contains the blast radius but does not eliminate the defect. The application's controls are:
+
+
+· Rust, not C/C++. The choice of Rust for the WASM module eliminates the class of memory-safety defects that the sandbox would merely contain.
+· ASAN in development builds. AddressSanitizer is enabled in dev builds to catch out-of-bounds access before release.
+· Strict CSP. script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'self'. The narrow 'wasm-unsafe-eval' is used instead of the broad 'unsafe-eval'; Trusted Types is enabled where the framework permits.
+· No client-side trust. The application is entirely client-side by design (Phase 1, Section 2.2), so there is no server-side validation to defer to; the corollary is that no user input is treated as authoritative for anything beyond local rendering. Imported documents are validated by Zod (Section 2.3) and rendered as data, never eval'd.
+
+
+---
+
+
+9. Testing Discipline: The Shape of the Suite
+The test pyramid is stated in Phase 1, Section 7 and enforced in Phase 5. The pattern-level rules that govern test authorship are:
+
+
+· Pure functions are tested without a rendering harness. L-system expansion, turtle interpretation, and rotation mathematics have no DOM dependency and are tested in the default Vitest environment.
+· Canvas rendering is tested in Browser Mode. jsdom cannot verify pixels; a test that asserts fillRect was called verifies the call, not the output. Any test touching a rendering context runs in Browser Mode【Phase 1, Section 7】.
+· The boundary is tested where it fails. WASM tests cover string encoding, buffer ownership, initialisation ordering, error propagation, and memory growth — the failure modes that do not exist in native cargo test.
+· The strategy contract is tested once, against every implementation. The Phase 2 test vectors are the contract; the Phase 3 Rust implementation is validated against the same vectors, not a parallel set.
+
+
+---
+
+
+10. Consolidated Anti-Pattern Register
+
+
+# Anti-pattern Domain Replacement
+1 Store destructuring without selector Zustand Selector per field
+2 Derived or server state in Zustand Zustand Selector / TanStack Query
+3 Direct state mutation Zustand Immutable set() updater
+4 Non-exhaustive switch on a union TypeScript assertNever default
+5 as assertion at a runtime boundary TypeScript Zod .safeParse()
+6 useEffect for derived state React Compute during render
+7 Prop drilling beyond two layers React Composition or Context
+8 Blanket useMemo / useCallback React Profile-first memoisation
+9 Object marshalling across JS↔WASM WASM Flat Float64Array + transfer
+10 Forgetting .delete() on WASM objects WASM useEffect cleanup + explicit disposal
+11 FinalizationRegistry as primary cleanup WASM Deterministic .delete() / using
+12 COOP/COEP without threading justification Deployment ADR amendment before headers
+13 Strategy-specific if in orchestrator Architecture Data-driven routing via threshold
+14 Cross-feature deep imports Architecture Public API (index.ts)
+15 Adding a document field without schemaVersion bump Persistence Migration path + version increment
+
+
+---
+
+
+11. Idioms Quick Reference
+Idiom Form Use when
+Discriminated union state { status: 'idle' } \| { status: 'success'; data: T } Any state with mutually exclusive variants
+assertNever default: return assertNever(action) Every union switch
+Result { ok: true; value } \| { ok: false; error } Anticipated, recoverable failure
+Selector subscription useStore(s => s.field) Every Zustand read
+Compound component <Controls.Symmetry /> with parent context The control panel
+Flat-array boundary Float64Array + Transferable Every JS↔WASM call
+Parametric mirror Description text from store, aria-describedby on canvas The accessibility surface
+Guide as DOM sibling Absolutely positioned overlay, not a Konva layer Non-exported visual aids
+
+
+---
+
+
+12. Consolidated Conclusions for the Development Team
+
+
+12.1 The architecture is a set of contracts, not a set of files. The SymmetryStrategy interface, the worker message protocol, the MandalaDocument schema, and the ADR registry are the contracts. A change that violates a contract is a defect even if it compiles and the tests pass. The code is expected to conform to the document, not the reverse.
+
+
+12.2 TypeScript's value is realised only at the boundaries. Inside a well-typed function, the compiler is a proof assistant. At a runtime boundary — JSON.parse, postMessage, localStorage, an imported file — the compiler is silent. The discipline of Zod validation and Result returns at boundaries is what makes the internal type safety meaningful.
+
+
+12.3 WASM is a scalpel, not a foundation. The Phase 3 threshold ADR governs adoption. The team is instructed to resist the gravitational pull of "we have WASM, let's use it for everything." The JavaScript path is the default; the WASM path is the measured exception.
+
+
+12.4 Memory is the tax of performance. Every WASM allocation has an owner and a disposal site. The team is instructed to treat a .delete()-less allocation as a resource leak with the same severity as an unhandled Promise rejection.
+
+
+12.5 Accessibility is architecture, not a checklist. The canvas is a visual presentation layer; the parametric mirror is the semantic representation. Every feature that changes the mandala state must route its announcement through the debounced live region. A feature that ships without this routing is incomplete, not "to be polished later."
+
+
+12.6 The anti-pattern register (Section 10) is the review checklist. Code review verifies behaviour against the register before it verifies style. A pull request that introduces a registered anti-pattern is rejected regardless of test coverage.
+
+
+12.7 The document set is closed but not frozen. Phases 1–5 are the engineering record; Phase 6 is the working reference. A decision changes by ADR amendment, a contract changes by versioned schema, and a pattern changes by register update — in that order, never by silent code drift.
+
+
+---
+
+
+End of Phase 6 Document. This closes the seven-document set (PH1-STRAT through PH6-APPENDIX). The development team now holds the complete strategic, executable, and reference material required to build, review, and sustain the application without renegotiating the architectural ground on which it stands.
