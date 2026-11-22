@@ -1,0 +1,61 @@
+name: CI Verify (Web, Python, Rust & Android)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  web-and-python-gates:
+    name: TypeScript, Python PEP, WASM & Vite Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: python3 -m unittest discover -s scripts -p "test_*.py" -v
+      - run: npm run manifest:build
+      - run: npm run wasm:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run quality:gate
+      - run: npm run bench:gate
+      - run: npm run a11y:exemptions
+      - run: npm run build
+      - run: npm run size:check
+
+  rust-core:
+    name: Rust Mandala Core Tests & Wasm32 Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo test --workspace --locked || cargo test --workspace
+      - run: cargo build -p mandala-core --target wasm32-unknown-unknown --release --no-default-features
+
+  android-unit-tests:
+    name: Android Kotlin Compilation & JUnit 5 Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Ensure www assets exist for resource merge
+        run: mkdir -p android/app/src/main/assets/www
+      - name: Run Android Sideload Debug Unit Tests
+        working-directory: android
+        run: gradle testSideloadDebugUnitTest --stacktrace

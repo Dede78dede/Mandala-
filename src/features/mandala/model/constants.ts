@@ -94,7 +94,7 @@ export const RESOURCE_GUARD_LIMITS = {
   maxSceneWedges: 20_000,
   maxScenePoints: 120_000,
   maxExpandedPrimitivesPerFrame: 60_000,
-  maxFractalSegmentsAllowed: 25_000,
+  maxFractalSegmentsAllowed: 35_000,
   maxHistoryCommandsUnderPressure: 15,
   l2HardMaxBytes: 16 * 1024 * 1024, // 16 MiB anti-over-memory ceiling
   cpuFrameBudgetMs: 16.6,
@@ -103,6 +103,8 @@ export const RESOURCE_GUARD_LIMITS = {
   persistenceDebounceMs: 250,
   maxLocalStorageJsonBytes: 1_500_000, // Offload pure L3 IndexedDB swap above ~1.5MB
   svgPreviewMemoMaxWedges: 1_200,
+  svgPreviewMemoMaxExpandedPrimitives: 2_400,
+  svgLivePreviewMaxExpandedPrimitives: 240,
   renderSnapshotMaxEntries: 4,
 } as const;
 
@@ -215,8 +217,55 @@ export const SVG_ANIMATION_LIMITS = {
 } as const;
 
 export const MORPH_LIMITS = {
-  resampledPointCount: 32,
+  resampledPointCount: 20,
   maxPreviewStrokes: 1500,
+  maxExpandedMorphPrimitivesPerFrame: 1_200,
+  minAdaptiveMorphStrokes: 24,
 } as const;
 
+/**
+ * Canonical WASM Linear-Memory ABI Contract synchronized with `scripts/build_wasm.py` (`WasmAbiSpec`).
+ */
+export const WASM_ABI_SPEC = {
+  heapBaseOffsetBytes: 4096,
+  initialMemoryPages: 32,
+  maxMemoryPages: 512,
+  rulesTableBytes: 1024,
+  ruleEntryStrideBytes: 8,
+  turtleStackMaxDepth: 256,
+  turtleStackFrameBytes: 24,
+  outMetaBytes: 16,
+  pointStrideF64Bytes: 16,
+  polyLengthStrideBytes: 4,
+  workerInitTimeoutMs: 6_000,
+  workerJobTimeoutMs: 15_000,
+} as const;
+
+export interface ContrastThemeDefaults {
+  readonly darkSwatchHexes: readonly string[];
+  readonly lightIndicatorHex: string;
+  readonly darkIndicatorHex: string;
+}
+
+export const CONTRAST_THEME_DEFAULTS: ContrastThemeDefaults = {
+  darkSwatchHexes: ['#000000', '#0F172A'],
+  lightIndicatorHex: '#ffffff',
+  darkIndicatorHex: '#000000',
+};
+
+export const ANDROID_DISTRIBUTION_DEFAULTS = {
+  releaseManifestPath: '/releases/update-manifest.json',
+  defaultVersionName: '1.0.0',
+  defaultVersionCode: 10_000,
+  androidPackageId: 'com.mandala.studio',
+  twaPackageId: 'com.mandala.studio.twa',
+  minSdk: 28,
+  targetSdk: 35,
+  apkAssetName: 'mandala-studio-universal-release.apk',
+  fallbackReleasePageUrl: 'https://github.com/mandala-studio/mandala-studio/releases/latest',
+  fallbackApkDownloadUrl:
+    'https://github.com/mandala-studio/mandala-studio/releases/latest/download/mandala-studio-universal-release.apk',
+  androidDocumentReturnEvent: 'mandala:android-document-return',
+  androidUpdateStatusEvent: 'mandala:android-update-status',
+} as const;
 

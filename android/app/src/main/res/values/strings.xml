@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mandala Studio</string>
+    <string name="native_stylus_title">Tela Stilo 120Hz</string>
+    <string name="native_stylus_save">Applica al Progetto</string>
+    <string name="native_stylus_cancel">Torna allo Studio</string>
+    <string name="share_export_chooser">Esporta da Mandala Studio</string>
+    <string name="install_update_chooser">Installa aggiornamento Mandala Studio</string>
+    <string name="webview_recovery_banner">Ripristino motore grafico WebView in corso...</string>
+</resources>

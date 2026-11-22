@@ -10,4 +10,11 @@ reports/
 test-results/
 playwright-report/
 .lighthouseci/
-
+target/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/src/main/assets/www/
+android/app/src/main/jniLibs/
+android/*.keystore
+release-artifacts/

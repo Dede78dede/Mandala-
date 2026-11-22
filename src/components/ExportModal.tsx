@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import {
   CANVAS_THEME,
+  LENS_LIMITS,
   LOGICAL_CANVAS_SIZE,
   LOGICAL_CENTER,
   RESOURCE_GUARD_LIMITS,
@@ -26,6 +27,7 @@ import {
   SVG_DEFAULT_EXPORT_SIZE,
   WORLD_SPACE_LIMITS,
 } from '../features/mandala/model/constants.ts';
+import { MANDALA_MESSAGES } from '../features/mandala/model/messages.ts';
 import {
   PngExportResolution,
   SvgAnimationMode,
@@ -37,7 +39,9 @@ import { useMandalaStore } from '../features/mandala/model/store.ts';
 import { formatExportAnnouncement } from '../features/mandala/lib/accessibility.ts';
 import {
   DEFAULT_SVG_PATH_DRAWING_CONFIG,
+  estimateExpandedSvgPrimitives,
   exportToSVGBenchmarked,
+  sampleWedgesForPreview,
 } from '../features/mandala/lib/svgExport.ts';
 import {
   renderMandalaToPNGDataUrl,
@@ -46,8 +50,14 @@ import {
 import { measureWedgesMaxRadius } from '../features/mandala/lib/viewportCamera.ts';
 import { buildMandalaDocument, flushPendingPersistence } from '../features/mandala/lib/persistence.ts';
 import { downloadDataUrl, downloadTextFile } from '../shared/lib/browserExport.ts';
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from '../shared/lib/diagnostics.ts';
 import { ModalShell } from '../shared/ui/ModalShell.tsx';
-import type { OperationState } from '../shared/lib/result.ts';
+import { OperationStatus, type OperationState } from '../shared/lib/result.ts';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -107,7 +117,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
   const [svgMode, setSvgMode] = useState<
     SvgSerializationMode.Auto | SvgSerializationMode.Absolute
   >(SvgSerializationMode.Auto);
-  const [opState, setOpState] = useState<OperationState<string, string>>({ status: 'idle' });
+  const [isExportingPng, setIsExportingPng] = useState<boolean>(false);
+  const [opState, setOpState] = useState<OperationState<string, string>>({
+    status: OperationStatus.Idle,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const contentMaxRadius = useMemo(
@@ -130,7 +143,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
     ? CANVAS_THEME.backgroundHex
     : CANVAS_THEME.transparentBackground;
 
-  const isHeavySvgScene = wedges.length > RESOURCE_GUARD_LIMITS.svgPreviewMemoMaxWedges;
+  const expandedSvgPrimitives = useMemo(
+    () => estimateExpandedSvgPrimitives(wedges, symmetryParams),
+    [wedges, symmetryParams]
+  );
+
+  const isHeavySvgScene =
+    wedges.length > RESOURCE_GUARD_LIMITS.svgPreviewMemoMaxWedges ||
+    expandedSvgPrimitives > RESOURCE_GUARD_LIMITS.svgPreviewMemoMaxExpandedPrimitives;
 
   const svgPreviewReport = useMemo(() => {
     if (!isOpen || isHeavySvgScene) return null;
@@ -157,12 +177,27 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
     pathDrawingCfg,
   ]);
 
-  const svgPreviewUris = useMemo(() => {
-    if (!isOpen || isHeavySvgScene || svgAnimMode === SvgAnimationMode.None || wedges.length === 0) {
-      return null;
+  const previewWedges = useMemo(() => {
+    if (!isOpen || svgAnimMode === SvgAnimationMode.None || wedges.length === 0) {
+      return [];
     }
-    const ghostReport = exportToSVGBenchmarked(
+    const sampled = sampleWedgesForPreview(
       wedges,
+      symmetryParams,
+      RESOURCE_GUARD_LIMITS.svgLivePreviewMaxExpandedPrimitives
+    );
+    const spanScale = exportWorldSpan / LOGICAL_CANVAS_SIZE;
+    if (spanScale <= 1.05) return sampled;
+    return sampled.map((s) => ({
+      ...s,
+      strokeWidth: Math.max(s.strokeWidth, 3.2 * spanScale),
+    }));
+  }, [isOpen, svgAnimMode, wedges, symmetryParams, exportWorldSpan]);
+
+  const ghostPreviewUri = useMemo(() => {
+    if (previewWedges.length === 0) return null;
+    const ghostReport = exportToSVGBenchmarked(
+      previewWedges,
       symmetryParams,
       SVG_DEFAULT_EXPORT_SIZE,
       SVG_DEFAULT_EXPORT_SIZE,
@@ -171,8 +206,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       exportWorldSpan,
       SvgAnimationMode.None
     );
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(ghostReport.svg)}`;
+  }, [previewWedges, symmetryParams, svgMode, exportWorldSpan]);
+
+  const animatedPreviewUri = useMemo(() => {
+    if (previewWedges.length === 0 || svgAnimMode === SvgAnimationMode.None) return null;
     const animReport = exportToSVGBenchmarked(
-      wedges,
+      previewWedges,
       symmetryParams,
       SVG_DEFAULT_EXPORT_SIZE,
       SVG_DEFAULT_EXPORT_SIZE,
@@ -180,17 +220,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       svgMode,
       exportWorldSpan,
       svgAnimMode,
-      { ...pathDrawingCfg, loop: true }
+      pathDrawingCfg
     );
     const stamped = `${animReport.svg}\n<!-- replay:${previewReplayKey} -->`;
-    return {
-      ghostUri: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(ghostReport.svg)}`,
-      animatedUri: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(stamped)}`,
-    };
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(stamped)}`;
   }, [
-    isOpen,
-    isHeavySvgScene,
-    wedges,
+    previewWedges,
     symmetryParams,
     svgMode,
     exportWorldSpan,
@@ -202,66 +237,93 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
   if (!isOpen) return null;
 
   const setTempSuccess = (msg: string) => {
-    setOpState({ status: 'success', data: msg });
-    setTimeout(() => setOpState({ status: 'idle' }), 3500);
+    setOpState({ status: OperationStatus.Success, data: msg });
+    setTimeout(() => setOpState({ status: OperationStatus.Idle }), 3500);
   };
 
   const handleExportPNG = async () => {
-    let dataUrl: string | null = null;
+    if (isExportingPng) return;
+    setIsExportingPng(true);
+    try {
+      // Yield one frame so disabled busy feedback paints cleanly before heavy raster/GPU pass
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 16);
+      });
 
-    if (applyLensToPng) {
-      try {
-        const lensPass = await import('../features/mandala/lib/lensWebglPass.ts');
-        const sourceCanvas = document.createElement('canvas');
-        const sourceTexRes = Math.min(4096, Math.max(2048, resolution));
-        renderSupersampledLensSourceCanvas(
-          sourceCanvas,
+      let dataUrl: string | null = null;
+
+      if (applyLensToPng) {
+        let sourceCanvas: HTMLCanvasElement | null = null;
+        try {
+          const lensPass = await import('../features/mandala/lib/lensWebglPass.ts');
+          sourceCanvas = document.createElement('canvas');
+          const sourceTexRes = Math.min(
+            LENS_LIMITS.standardTexturePx,
+            Math.max(LENS_LIMITS.fallbackTexturePx, resolution)
+          );
+          renderSupersampledLensSourceCanvas(
+            sourceCanvas,
+            wedges,
+            symmetryParams,
+            camera,
+            sourceTexRes,
+            includeBackground
+          );
+          dataUrl = lensPass.renderLensCompositeToPNGDataUrl(
+            sourceCanvas,
+            lens,
+            resolution,
+            includeBackground
+          );
+        } catch (err) {
+          reportDiagnostic({
+            severity: DiagnosticSeverity.Warning,
+            source: DiagnosticSource.WebGL2,
+            code: DomainErrorCode.WebGl2ContextLost,
+            message: MANDALA_MESSAGES.webgl.pngLensFallbackNotice,
+            cause: err,
+          });
+          dataUrl = null;
+        } finally {
+          if (sourceCanvas) {
+            sourceCanvas.width = 0;
+            sourceCanvas.height = 0;
+          }
+        }
+      }
+
+      if (!dataUrl) {
+        dataUrl = renderMandalaToPNGDataUrl(
           wedges,
           symmetryParams,
-          camera,
-          sourceTexRes,
-          includeBackground
-        );
-        dataUrl = lensPass.renderLensCompositeToPNGDataUrl(
-          sourceCanvas,
-          lens,
           resolution,
-          includeBackground
+          includeBackground,
+          exportWorldSpan
         );
-        sourceCanvas.width = 0;
-        sourceCanvas.height = 0;
-      } catch {
-        dataUrl = null;
       }
-    }
 
-    if (!dataUrl) {
-      dataUrl = renderMandalaToPNGDataUrl(
-        wedges,
-        symmetryParams,
-        resolution,
-        includeBackground,
-        exportWorldSpan
+      if (!dataUrl) {
+        setOpState({
+          status: OperationStatus.Error,
+          error: MANDALA_MESSAGES.export.pngUnavailable,
+        });
+        return;
+      }
+
+      const suffix = applyLensToPng ? `_lens_${lens.profile}` : '';
+      downloadDataUrl(
+        dataUrl,
+        `mandala_${symmetryParams.order}fold_${resolution}x${resolution}${suffix}.png`
       );
+      setTempSuccess(
+        `PNG ${resolution}×${resolution}${applyLensToPng ? ' con Lente WebGL2' : ''} esportato.`
+      );
+      announceLiveMessage(
+        formatExportAnnouncement(ExportFormat.Png, `${resolution} per ${resolution} pixel`)
+      );
+    } finally {
+      setIsExportingPng(false);
     }
-
-    if (!dataUrl) {
-      setOpState({
-        status: 'error',
-        error: 'Contesto Canvas non disponibile per esportazione PNG.',
-      });
-      return;
-    }
-
-    const suffix = applyLensToPng ? `_lens_${lens.profile}` : '';
-    downloadDataUrl(
-      dataUrl,
-      `mandala_${symmetryParams.order}fold_${resolution}x${resolution}${suffix}.png`
-    );
-    setTempSuccess(
-      `PNG ${resolution}×${resolution}${applyLensToPng ? ' con Lente WebGL2' : ''} esportato.`
-    );
-    announceLiveMessage(formatExportAnnouncement(ExportFormat.Png, `${resolution} per ${resolution} pixel`));
   };
 
   const handleExportSVG = () => {
@@ -282,8 +344,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       'image/svg+xml;charset=utf-8'
     );
 
-    const modeLabel =
-      report.modeUsed === SvgSerializationMode.DefsUse ? '<defs>/<use>' : 'Coordinate Assolute';
+    const modeLabel = MANDALA_MESSAGES.export.svgModeLabel(report.modeUsed);
     const kb = (report.selectedBytes / 1024).toFixed(1);
     setTempSuccess(`SVG ${modeLabel} (${kb} KB) scaricato.`);
     announceLiveMessage(formatExportAnnouncement(ExportFormat.Svg, `${kb} kilobyte`));
@@ -306,7 +367,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       `mandala_doc_v2_${Date.now()}.json`,
       'application/json;charset=utf-8'
     );
-    setTempSuccess('Documento JSON v2 (spazio mondo centrato) salvato.');
+    setTempSuccess(MANDALA_MESSAGES.export.jsonSavedToast);
     announceLiveMessage(formatExportAnnouncement(ExportFormat.Json, `${wedges.length} tratti`));
   };
 
@@ -319,10 +380,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       if (res.ok) {
         setTempSuccess(`Importato "${res.value.title}" (${res.value.wedges.length} tratti).`);
       } else {
-        setOpState({ status: 'error', error: res.error });
+        setOpState({ status: OperationStatus.Error, error: res.error });
       }
-    } catch {
-      setOpState({ status: 'error', error: 'Impossibile leggere il file selezionato.' });
+    } catch (err) {
+      reportDiagnostic({
+        severity: DiagnosticSeverity.Warning,
+        source: DiagnosticSource.Export,
+        code: DomainErrorCode.ValidationFailed,
+        message: MANDALA_MESSAGES.export.jsonReadFailed,
+        cause: err,
+      });
+      setOpState({ status: OperationStatus.Error, error: MANDALA_MESSAGES.export.jsonReadFailed });
     }
     e.target.value = '';
   };
@@ -342,14 +410,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
       }
     >
       <div className="p-6 space-y-4 text-xs text-slate-300 max-h-[75vh] overflow-y-auto">
-        {opState.status === 'success' && (
+        {opState.status === OperationStatus.Success && (
           <div className="p-3 bg-emerald-950/60 border border-emerald-800/80 rounded-xl text-emerald-300 flex items-center gap-2">
             <Check className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>{opState.data}</span>
           </div>
         )}
 
-        {opState.status === 'error' && (
+        {opState.status === OperationStatus.Error && (
           <div className="p-3 bg-rose-950/60 border border-rose-800/80 rounded-xl text-rose-300 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>{opState.error}</span>
@@ -550,26 +618,34 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
                 data-testid="svg-live-preview"
                 className="flex flex-col items-center justify-center p-2.5 bg-slate-950 border border-slate-800 rounded-xl"
               >
-                {svgPreviewUris ? (
-                  <div className="relative w-44 h-44 rounded-lg bg-[#090d16] overflow-hidden">
-                    <img
-                      src={svgPreviewUris.ghostUri}
-                      alt=""
-                      aria-hidden="true"
-                      className="w-full h-full object-contain opacity-20"
-                    />
-                    <img
-                      key={previewReplayKey}
-                      src={svgPreviewUris.animatedUri}
-                      alt="Anteprima animata vettoriale SVG"
-                      className="absolute inset-0 w-full h-full object-contain"
-                    />
+                {ghostPreviewUri && animatedPreviewUri ? (
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div
+                      className="relative w-44 h-44 rounded-lg overflow-hidden"
+                      style={{ backgroundColor: CANVAS_THEME.backgroundHex }}
+                    >
+                      <img
+                        src={ghostPreviewUri}
+                        alt=""
+                        aria-hidden="true"
+                        className="w-full h-full object-contain opacity-20"
+                      />
+                      <img
+                        key={previewReplayKey}
+                        src={animatedPreviewUri}
+                        alt="Anteprima animata vettoriale SVG"
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                    </div>
+                    {previewWedges.length < wedges.length && (
+                      <p className="text-[10px] text-slate-400 text-center">
+                        Anteprima leggera ({previewWedges.length}/{wedges.length} tracciati base); il file scaricato contiene 100% della geometria.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <p className="text-[11px] text-slate-400 py-4 text-center">
-                    {wedges.length === 0
-                      ? 'Disegna o genera un motivo per vedere l’anteprima animata.'
-                      : 'Scena troppo densa per anteprima live: l’animazione verrà comunque inclusa nel file SVG.'}
+                    Disegna o genera un motivo per vedere l’anteprima animata.
                   </p>
                 )}
               </div>
@@ -580,11 +656,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose }) => 
         <div className="space-y-2.5 pt-1">
           <button
             onClick={() => void handleExportPNG()}
-            className="w-full min-h-[44px] flex items-center justify-between p-3.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-xl shadow-md transition"
+            disabled={isExportingPng}
+            className="w-full min-h-[44px] flex items-center justify-between p-3.5 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-slate-950 font-semibold rounded-xl shadow-md transition"
           >
             <span className="flex items-center gap-2">
               <Image className="w-4 h-4" />
-              Scarica PNG ({resolution}×{resolution}px)
+              {isExportingPng
+                ? 'Generazione PNG in corso...'
+                : `Scarica PNG (${resolution}×${resolution}px)`}
             </span>
             <Download className="w-4 h-4" />
           </button>

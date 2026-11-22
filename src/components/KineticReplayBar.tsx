@@ -25,10 +25,12 @@ import {
   KineticMode,
   MorphSlotId,
   MorphTargetKind,
-  PolarGeneratorId,
 } from '../features/mandala/model/types.ts';
 import { useMandalaStore } from '../features/mandala/model/store.ts';
-import { POLAR_GENERATOR_LIST } from '../features/mandala/lib/polarGenerators.ts';
+import {
+  POLAR_GENERATOR_LIST,
+  resolvePolarGenerator,
+} from '../features/mandala/lib/polarGenerators.ts';
 import { getResourceHealthSnapshot } from '../features/mandala/lib/resourceGuard.ts';
 import {
   describeMotionPauseReason,
@@ -283,7 +285,7 @@ export const KineticReplayBar: React.FC = memo(() => {
               <select
                 aria-label="Target Armonica Polare per Morphing"
                 value={morphTargetPolarPreset}
-                onChange={(e) => setMorphTargetPolarPreset(e.target.value as PolarGeneratorId)}
+                onChange={(e) => setMorphTargetPolarPreset(resolvePolarGenerator(e.target.value).id)}
                 className={`min-h-[34px] px-2 py-1 rounded-lg text-[11px] border transition ${
                   morphTargetKind === MorphTargetKind.PolarPreset
                     ? 'bg-purple-950/60 border-purple-500 text-purple-200 font-medium'

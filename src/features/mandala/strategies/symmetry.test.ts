@@ -44,7 +44,8 @@ test('RadialStrategy: N=8 produces 8 strokes at 45 degree increments', () => {
   if (res.ok) {
     assert.equal(res.value.length, 8);
     // 2nd stroke (index 2 => 90 degrees clockwise around (400,400)): (400,300) -> (500,400)
-    const p90 = res.value[2].points[0];
+    const p90 = res.value[2]?.points[0];
+    assert.ok(p90);
     assert.ok(Math.abs(p90.x - 500) < 1e-6);
     assert.ok(Math.abs(p90.y - 400) < 1e-6);
   }
@@ -87,8 +88,10 @@ test('RadialStrategy: idempotent under point-order reversal', () => {
   assert.equal(res2.ok, true);
   if (res1.ok && res2.ok) {
     assert.equal(res1.value.length, res2.value.length);
-    const ptA = res1.value[1].points[0];
-    const ptB = res2.value[1].points[res2.value[1].points.length - 1];
+    const ptA = res1.value[1]?.points[0];
+    const r2pts = res2.value[1]?.points;
+    const ptB = r2pts ? r2pts[r2pts.length - 1] : undefined;
+    assert.ok(ptA && ptB);
     assert.ok(Math.abs(ptA.x - ptB.x) < 1e-9);
     assert.ok(Math.abs(ptA.y - ptB.y) < 1e-9);
   }
@@ -112,15 +115,17 @@ test('MirrorRadialStrategy: reflect vs alternate modes produce 2N strokes with d
     assert.equal(reflectRes.value.length, 12);
     assert.equal(altRes.value.length, 12);
     // Distance from center preserved on reflected point
-    const origDist = Math.hypot(sampleWedge.points[1].x - 400, sampleWedge.points[1].y - 400);
-    const reflPt = reflectRes.value[1].points[1];
+    const origPt = sampleWedge.points[1];
+    const reflPt = reflectRes.value[1]?.points[1];
+    assert.ok(origPt && reflPt);
+    const origDist = Math.hypot(origPt.x - 400, origPt.y - 400);
     const reflDist = Math.hypot(reflPt.x - 400, reflPt.y - 400);
     assert.ok(Math.abs(origDist - reflDist) < 1e-6);
     // Alternate mode differs on odd wedge index (wedge 1 reflected stroke = index 3)
-    assert.notEqual(
-      reflectRes.value[3].points[1].x.toFixed(3),
-      altRes.value[3].points[1].x.toFixed(3)
-    );
+    const r3 = reflectRes.value[3]?.points[1];
+    const a3 = altRes.value[3]?.points[1];
+    assert.ok(r3 && a3);
+    assert.notEqual(r3.x.toFixed(3), a3.x.toFixed(3));
   }
 });
 
@@ -162,7 +167,7 @@ test('rotatePoint and reflectPoint preserve center invariance', () => {
 test('Phase 1 Benchmark Matrix executes across N=8..48 and 3 complexities', () => {
   const matrix = runPhase1BenchmarkMatrix(SymmetryStrategyKind.Radial, 4);
   assert.equal(matrix.length, 15);
-  assert.equal(matrix[0].order, 8);
-  assert.equal(matrix[matrix.length - 1].order, 48);
+  assert.equal(matrix[0]?.order, 8);
+  assert.equal(matrix[matrix.length - 1]?.order, 48);
   assert.ok(matrix.every((cell) => typeof cell.medianMs === 'number' && cell.p95Ms >= cell.medianMs));
 });

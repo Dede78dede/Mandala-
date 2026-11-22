@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Persistent Phase 3 WebAssembly Module Worker (MANDALA-PH3-WASM-001 §2.1.2 Task 3.1.C).
- * Isolates WASM linear memory from the React main thread and transfers expanded Float64Array
- * buffers back with zero-copy postMessage semantics.
+ * Validates inbound messages via Zod (`parseWorkerInboundMessage`) before dispatching
+ * linear-memory WASM kernels and transferring zero-copy Float64Array buffers back.
  */
 
+import { parseWorkerInboundMessage } from '../model/schemas.ts';
 import { WorkerMsgType } from '../model/types.ts';
 import {
   expandFlatPointsWithWasm,
@@ -15,7 +16,7 @@ import {
   triggerWasmPanicForTest,
   type WasmSymmetryInstance,
 } from './wasmSymmetryAdapter.ts';
-import type { WorkerInboundMessage, WorkerOutboundMessage } from './workerProtocol.ts';
+import type { WorkerOutboundMessage } from './workerProtocol.ts';
 
 let wasmInstance: WasmSymmetryInstance | null = null;
 
@@ -23,8 +24,18 @@ function postOutbound(msg: WorkerOutboundMessage, transferables: Transferable[] 
   self.postMessage(msg, { transfer: transferables });
 }
 
-self.onmessage = async (event: MessageEvent<WorkerInboundMessage>) => {
-  const msg = event.data;
+self.onmessage = async (event: MessageEvent<unknown>) => {
+  const parsed = parseWorkerInboundMessage(event.data);
+  if (!parsed.ok) {
+    postOutbound({
+      type: WorkerMsgType.Error,
+      jobId: null,
+      message: parsed.error,
+    });
+    return;
+  }
+
+  const msg = parsed.value;
 
   if (msg.type === WorkerMsgType.Init) {
     try {
@@ -89,7 +100,8 @@ self.onmessage = async (event: MessageEvent<WorkerInboundMessage>) => {
       msg.stepLength,
       msg.angleDegrees,
       msg.order,
-      { x: msg.cx, y: msg.cy }
+      { x: msg.cx, y: msg.cy },
+      Boolean(msg.baseOnly)
     );
 
     if (!res.ok) {

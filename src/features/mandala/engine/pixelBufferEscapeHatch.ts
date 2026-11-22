@@ -11,7 +11,8 @@
 import { withCanvasState, withOffscreenCanvas } from '../../../shared/lib/contextManager.ts';
 import { JsGeometryEngine } from '../engine/geometryEngine.ts';
 import { LOGICAL_CANVAS_SIZE, LOGICAL_CENTER, RESOURCE_GUARD_LIMITS } from '../model/constants.ts';
-import type { SymmetryParams, WedgeStroke } from '../model/types.ts';
+import type { CameraTransform, SymmetryParams, WedgeStroke } from '../model/types.ts';
+import { applyCameraTransformToContext } from '../lib/viewportCamera.ts';
 
 export interface RgbaColor {
   readonly r: number;
@@ -59,13 +60,13 @@ function blendPixel(
   const idx = (py * width + px) * 4;
   const srcA = (color.a / 255) * coverage;
   const invA = 1 - srcA;
-  const dstA = buf[idx + 3] / 255;
+  const dstA = (buf[idx + 3] ?? 0) / 255;
   const outA = srcA + dstA * invA;
 
   if (outA <= 0) return;
-  buf[idx] = Math.round((color.r * srcA + buf[idx] * dstA * invA) / outA);
-  buf[idx + 1] = Math.round((color.g * srcA + buf[idx + 1] * dstA * invA) / outA);
-  buf[idx + 2] = Math.round((color.b * srcA + buf[idx + 2] * dstA * invA) / outA);
+  buf[idx] = Math.round((color.r * srcA + (buf[idx] ?? 0) * dstA * invA) / outA);
+  buf[idx + 1] = Math.round((color.g * srcA + (buf[idx + 1] ?? 0) * dstA * invA) / outA);
+  buf[idx + 2] = Math.round((color.b * srcA + (buf[idx + 2] ?? 0) * dstA * invA) / outA);
   buf[idx + 3] = Math.round(outA * 255);
 }
 
@@ -171,17 +172,19 @@ export function renderSceneToPixelBuffer(
     }
 
     const stroke = expandedRes.value[sIdx];
-    if (stroke.points.length === 0) continue;
+    if (!stroke || stroke.points.length === 0) continue;
     const rgba = parseHexRgba(stroke.stroke, stroke.opacity);
     const radius = Math.max(0.9, (stroke.strokeWidth * scale) / 2);
 
     if (stroke.points.length === 1) {
+      const pt = stroke.points[0];
+      if (!pt) continue;
       rasterizeDisc(
         data,
         width,
         height,
-        stroke.points[0].x * scaleX,
-        stroke.points[0].y * scaleY,
+        pt.x * scaleX,
+        pt.y * scaleY,
         radius,
         rgba
       );
@@ -191,6 +194,7 @@ export function renderSceneToPixelBuffer(
     for (let i = 0; i < stroke.points.length - 1; i++) {
       const a = stroke.points[i];
       const b = stroke.points[i + 1];
+      if (!a || !b) continue;
       rasterizeCapsuleSegment(
         data,
         width,
@@ -207,7 +211,7 @@ export function renderSceneToPixelBuffer(
 
   let nonTransparentPixels = 0;
   for (let i = 3; i < data.length; i += 4) {
-    if (data[i] > 0) nonTransparentPixels += 1;
+    if ((data[i] ?? 0) > 0) nonTransparentPixels += 1;
   }
 
   return {
@@ -230,9 +234,14 @@ export function blitPixelBufferToCanvas(
   wedges: readonly WedgeStroke[],
   symmetryParams: SymmetryParams,
   targetWidth: number,
-  targetHeight: number
+  targetHeight: number,
+  camera?: CameraTransform,
+  displaySize?: number,
+  dpr: number = 1,
+  viewportWidth?: number,
+  viewportHeight?: number
 ): PixelBufferSceneOutput {
-  const rasterDim = Math.min(LOGICAL_CANVAS_SIZE, Math.max(256, targetWidth));
+  const rasterDim = Math.min(LOGICAL_CANVAS_SIZE, Math.max(256, Math.min(targetWidth, targetHeight)));
   const pixelOutput = renderSceneToPixelBuffer(wedges, symmetryParams, rasterDim, rasterDim);
 
   withOffscreenCanvas(rasterDim, rasterDim, (offCanvas, offCtx) => {
@@ -244,9 +253,21 @@ export function blitPixelBufferToCanvas(
     offCtx.putImageData(imgData, 0, 0);
 
     withCanvasState(ctx, (c) => {
-      c.setTransform(1, 0, 0, 1, 0, 0);
       c.imageSmoothingEnabled = true;
-      c.drawImage(offCanvas, 0, 0, targetWidth, targetHeight);
+      if (camera && displaySize !== undefined) {
+        applyCameraTransformToContext(
+          c,
+          camera,
+          displaySize,
+          dpr,
+          viewportWidth ?? displaySize,
+          viewportHeight ?? displaySize
+        );
+        c.drawImage(offCanvas, 0, 0, LOGICAL_CANVAS_SIZE, LOGICAL_CANVAS_SIZE);
+      } else {
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.drawImage(offCanvas, 0, 0, targetWidth, targetHeight);
+      }
     });
   });
 

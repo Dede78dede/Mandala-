@@ -41,6 +41,14 @@ import {
   describeMotionPauseReason,
   useMotionLifecycle,
 } from '../shared/lib/motionLifecycle.ts';
+import { MANDALA_MESSAGES } from '../features/mandala/model/messages.ts';
+import { withBlobUrlAsync, withImageBitmap } from '../shared/lib/contextManager.ts';
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from '../shared/lib/diagnostics.ts';
 
 interface ViewportLensHudProps {
   readonly displaySize: number;
@@ -64,12 +72,11 @@ async function decodeOfflineImageBitmap(file: File): Promise<ImageBitmap> {
   if (typeof createImageBitmap === 'function') {
     return await createImageBitmap(file);
   }
-  const objectUrl = URL.createObjectURL(file);
-  try {
+  return await withBlobUrlAsync(file, async (objectUrl) => {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const el = new Image();
       el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error('Impossibile decodificare l’immagine selezionata.'));
+      el.onerror = () => reject(new Error(MANDALA_MESSAGES.media.imageDecodeFailed));
       el.src = objectUrl;
     });
     const canvas = document.createElement('canvas');
@@ -78,9 +85,7 @@ async function decodeOfflineImageBitmap(file: File): Promise<ImageBitmap> {
     const ctx = canvas.getContext('2d');
     if (ctx) ctx.drawImage(img, 0, 0);
     return await createImageBitmap(canvas);
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  });
 }
 
 export const ViewportLensHud: React.FC<ViewportLensHudProps> = memo(
@@ -157,16 +162,32 @@ export const ViewportLensHud: React.FC<ViewportLensHudProps> = memo(
       e.target.value = '';
       if (!file) return;
       if (file.size > KALEIDOSCOPE_LIMITS.maxUploadFileBytes) {
-        setUploadError('Immagine troppo pesante (max 12 MB).');
+        setUploadError(MANDALA_MESSAGES.media.imageTooLarge);
+        reportDiagnostic({
+          severity: DiagnosticSeverity.Warning,
+          source: DiagnosticSource.WebGL2,
+          code: DomainErrorCode.ImageDecodeFailed,
+          message: `Upload immagine rifiutato (${file.size} B > ${KALEIDOSCOPE_LIMITS.maxUploadFileBytes} B).`,
+          userNotice: MANDALA_MESSAGES.media.imageTooLarge,
+        });
         return;
       }
       try {
         const bitmap = await decodeOfflineImageBitmap(file);
-        setUploadError(null);
-        onUploadCustomTexture?.(bitmap);
-        bitmap.close();
-      } catch {
-        setUploadError('Formato immagine non supportato dal browser.');
+        await withImageBitmap(bitmap, (bmp) => {
+          setUploadError(null);
+          onUploadCustomTexture?.(bmp);
+        });
+      } catch (cause) {
+        setUploadError(MANDALA_MESSAGES.media.imageDecodeFailed);
+        reportDiagnostic({
+          severity: DiagnosticSeverity.Warning,
+          source: DiagnosticSource.WebGL2,
+          code: DomainErrorCode.ImageDecodeFailed,
+          message: 'Decodifica immagine locale fallita.',
+          userNotice: MANDALA_MESSAGES.media.imageDecodeFailed,
+          cause,
+        });
       }
     };
 

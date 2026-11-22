@@ -240,6 +240,62 @@ export enum CoordinateSpaceOrigin {
   CenteredZero = 'centered-zero',
 }
 
+export enum ModalPrefetchKey {
+  Fractal = 'fractal',
+  Export = 'export',
+  Hub = 'hub',
+  Mobile = 'mobile',
+  AndroidDownload = 'android-download',
+}
+
+export enum HostRuntimeKind {
+  WebBrowser = 'web-browser',
+  InstalledPwa = 'installed-pwa',
+  TrustedWebActivity = 'trusted-web-activity',
+  AndroidHybridHost = 'android-hybrid-host',
+}
+
+export enum AndroidUpdateState {
+  Idle = 'idle',
+  Checking = 'checking',
+  UpToDate = 'up-to-date',
+  UpdateAvailable = 'update-available',
+  Downloading = 'downloading',
+  ReadyToInstall = 'ready-to-install',
+  OfflineOrUnavailable = 'offline-or-unavailable',
+  Error = 'error',
+}
+
+export enum ReleaseChannel {
+  GitHubReleases = 'github-releases',
+  GitHubPages = 'github-pages',
+}
+
+export enum DistributionFlavor {
+  Sideload = 'sideload',
+  PlayStore = 'playstore',
+}
+
+export enum AdoptedComputePath {
+  Js = 'JS',
+  Wasm = 'WASM',
+  GreyZoneJs = 'GREY_ZONE_JS',
+  GreyZoneWasm = 'GREY_ZONE_WASM',
+}
+
+export type Brand<K, T extends string> = K & { readonly __brand: T };
+
+export type WorldCoord = Brand<number, 'WorldCoord'>;
+export type ScreenCoord = Brand<number, 'ScreenCoord'>;
+export type Radians = Brand<number, 'Radians'>;
+export type Degrees = Brand<number, 'Degrees'>;
+export type WedgeId = Brand<string, 'WedgeId'>;
+
+export type PointTuple = readonly [x: number, y: number];
+export type CosSinTuple = readonly [cos: number, sin: number];
+export type RangeTuple = readonly [min: number, max: number];
+export type DashTuple = readonly [dash: number, gap: number];
+
 export type HexColor = `#${string}`;
 
 export interface Point {
@@ -437,7 +493,7 @@ export interface Phase3BenchmarkCell extends BenchmarkCell {
   wasmComputeOnlyMs: number;
   boundaryOverheadMs: number;
   speedupRatio: number;
-  adoptedPath: 'JS' | 'WASM' | 'GREY_ZONE_JS' | 'GREY_ZONE_WASM';
+  readonly adoptedPath: AdoptedComputePath;
 }
 
 export interface Phase3BenchmarkReport {
@@ -499,4 +555,36 @@ export interface ResourceHealthSnapshot {
   readonly jsHeapLimitMb: number | null;
   readonly saturationRatio: number;
 }
+
+export interface ReleaseManifest {
+  readonly schemaVersion: 1;
+  readonly versionName: string;
+  readonly versionCode: number;
+  readonly channel: ReleaseChannel;
+  readonly flavor: DistributionFlavor;
+  readonly androidPackageId: string;
+  readonly twaPackageId: string;
+  readonly minSdk: number;
+  readonly targetSdk: number;
+  readonly apkAvailable: boolean;
+  readonly apkDownloadUrl: string;
+  readonly releasePageUrl: string;
+  readonly sha256: string | null;
+  readonly apkSizeBytes: number | null;
+  readonly generatedAt: string;
+}
+
+export interface AndroidBridgeStatusSnapshot {
+  readonly hostVersionName: string;
+  readonly hostVersionCode: number;
+  readonly flavor: DistributionFlavor;
+  readonly supportsNativeStylus: boolean;
+  readonly supportsSelfUpdate: boolean;
+  readonly supportsNativeExport: boolean;
+  readonly updateState: AndroidUpdateState;
+  readonly availableVersionName: string | null;
+  readonly availableVersionCode: number | null;
+  readonly errorMessage: string | null;
+}
+
 

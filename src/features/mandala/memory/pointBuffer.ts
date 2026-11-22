@@ -54,8 +54,8 @@ export class TypedPointBuffer {
   pushIfMoved(x: number, y: number, pressure: number = 0.5, minDistSq: number = 1.5): boolean {
     if (this.pointCount > 0) {
       const prevBase = (this.pointCount - 1) * this.stride;
-      const dx = x - this.buffer[prevBase];
-      const dy = y - this.buffer[prevBase + 1];
+      const dx = x - (this.buffer[prevBase] ?? 0);
+      const dy = y - (this.buffer[prevBase + 1] ?? 0);
       if (dx * dx + dy * dy < minDistSq) {
         return false;
       }
@@ -68,7 +68,7 @@ export class TypedPointBuffer {
     if (this.pointCount === 0) return 0.5;
     let sum = 0;
     for (let i = 0; i < this.pointCount; i++) {
-      sum += this.buffer[i * this.stride + 2];
+      sum += this.buffer[i * this.stride + 2] ?? 0.5;
     }
     return sum / this.pointCount;
   }
@@ -76,7 +76,12 @@ export class TypedPointBuffer {
   forEach(visitor: (x: number, y: number, pressure: number, index: number) => void): void {
     for (let i = 0; i < this.pointCount; i++) {
       const base = i * this.stride;
-      visitor(this.buffer[base], this.buffer[base + 1], this.buffer[base + 2], i);
+      visitor(
+        this.buffer[base] ?? 0,
+        this.buffer[base + 1] ?? 0,
+        this.buffer[base + 2] ?? 0.5,
+        i
+      );
     }
   }
 
@@ -88,9 +93,9 @@ export class TypedPointBuffer {
     for (let i = 0; i < this.pointCount; i++) {
       const base = i * this.stride;
       out[i] = {
-        x: this.buffer[base],
-        y: this.buffer[base + 1],
-        pressure: this.buffer[base + 2],
+        x: this.buffer[base] ?? 0,
+        y: this.buffer[base + 1] ?? 0,
+        pressure: this.buffer[base + 2] ?? 0.5,
       };
     }
     return out;

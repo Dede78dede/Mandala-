@@ -8,11 +8,15 @@
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, ShieldAlert, CheckCircle2, X } from 'lucide-react';
+import { ANDROID_DISTRIBUTION_DEFAULTS } from './features/mandala/model/constants.ts';
+import { MANDALA_MESSAGES } from './features/mandala/model/messages.ts';
+import { ModalPrefetchKey } from './features/mandala/model/types.ts';
 import { flushPendingPersistence } from './features/mandala/lib/persistence.ts';
 import { useMandalaStore } from './features/mandala/model/store.ts';
 import { MandalaCanvas } from './components/MandalaCanvas.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { BottomToolbar } from './components/BottomToolbar.tsx';
+import { DiagnosticNoticeBar } from './components/DiagnosticNoticeBar.tsx';
 import { OfflineIndicator } from './shared/pwa/PWAInstallButton.tsx';
 import { PWAUpdateBanner } from './shared/pwa/PWAUpdateBanner.tsx';
 
@@ -20,6 +24,10 @@ const loadMobileOptionsSheet = () =>
   import('./components/MobileOptionsSheet.tsx').then((m) => ({ default: m.MobileOptionsSheet }));
 const loadAndroidAnalysisHub = () =>
   import('./components/AndroidAnalysisHub.tsx').then((m) => ({ default: m.AndroidAnalysisHub }));
+const loadAndroidDownloadModal = () =>
+  import('./components/AndroidDownloadModal.tsx').then((m) => ({
+    default: m.AndroidDownloadModal,
+  }));
 const loadLSystemModal = () =>
   import('./components/LSystemModal.tsx').then((m) => ({ default: m.LSystemModal }));
 const loadExportModal = () =>
@@ -27,6 +35,7 @@ const loadExportModal = () =>
 
 const MobileOptionsSheet = lazy(loadMobileOptionsSheet);
 const AndroidAnalysisHub = lazy(loadAndroidAnalysisHub);
+const AndroidDownloadModal = lazy(loadAndroidDownloadModal);
 const LSystemModal = lazy(loadLSystemModal);
 const ExportModal = lazy(loadExportModal);
 
@@ -45,27 +54,58 @@ export default function App() {
   const redo = useMandalaStore((s) => s.redo);
 
   const [isAndroidHubOpen, setIsAndroidHubOpen] = useState<boolean>(false);
+  const [isAndroidDownloadOpen, setIsAndroidDownloadOpen] = useState<boolean>(false);
   const [isFractalModalOpen, setIsFractalModalOpen] = useState<boolean>(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState<boolean>(false);
 
-  const handlePrefetchModal = useCallback(
-    (modal: 'fractal' | 'export' | 'hub' | 'mobile') => {
-      if (modal === 'fractal') void loadLSystemModal();
-      else if (modal === 'export') void loadExportModal();
-      else if (modal === 'hub') void loadAndroidAnalysisHub();
-      else if (modal === 'mobile') void loadMobileOptionsSheet();
-    },
-    []
-  );
+  const handlePrefetchModal = useCallback((modal: ModalPrefetchKey) => {
+    switch (modal) {
+      case ModalPrefetchKey.Fractal:
+        void loadLSystemModal();
+        break;
+      case ModalPrefetchKey.Export:
+        void loadExportModal();
+        break;
+      case ModalPrefetchKey.Hub:
+        void loadAndroidAnalysisHub();
+        break;
+      case ModalPrefetchKey.Mobile:
+        void loadMobileOptionsSheet();
+        break;
+      case ModalPrefetchKey.AndroidDownload:
+        void loadAndroidDownloadModal();
+        break;
+    }
+  }, []);
 
   // Flush debounced persistence safely when page hides/unloads
   useEffect(() => {
     const handlePageHide = () => {
       flushPendingPersistence();
     };
+    const handleAndroidDocReturn = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail !== 'string') return;
+      const store = useMandalaStore.getState();
+      const imported = store.importDocumentJSON(event.detail);
+      if (imported.ok) {
+        store.announceLiveMessage(
+          MANDALA_MESSAGES.distribution.stylusHandoverImported(imported.value.title)
+        );
+      }
+    };
     window.addEventListener('pagehide', handlePageHide);
-    return () => window.removeEventListener('pagehide', handlePageHide);
+    window.addEventListener(
+      ANDROID_DISTRIBUTION_DEFAULTS.androidDocumentReturnEvent,
+      handleAndroidDocReturn
+    );
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener(
+        ANDROID_DISTRIBUTION_DEFAULTS.androidDocumentReturnEvent,
+        handleAndroidDocReturn
+      );
+    };
   }, []);
 
   // Global Keyboard Shortcuts (Ctrl+Z, Ctrl+Y)
@@ -109,6 +149,7 @@ export default function App() {
 
       <OfflineIndicator />
       <PWAUpdateBanner />
+      <DiagnosticNoticeBar />
 
       {persistenceWarning && (
         <div
@@ -174,6 +215,7 @@ export default function App() {
       <TopBar
         onOpenExport={() => setIsExportModalOpen(true)}
         onOpenAndroidHub={() => setIsAndroidHubOpen(true)}
+        onOpenAndroidDownload={() => setIsAndroidDownloadOpen(true)}
         onOpenFractalModal={() => setIsFractalModalOpen(true)}
         onOpenMobileOptions={() => setIsMobileOptionsOpen(true)}
         onPrefetchModal={handlePrefetchModal}
@@ -202,6 +244,7 @@ export default function App() {
             onOpenFractalModal={() => setIsFractalModalOpen(true)}
             onOpenExport={() => setIsExportModalOpen(true)}
             onOpenAndroidHub={() => setIsAndroidHubOpen(true)}
+            onOpenAndroidDownload={() => setIsAndroidDownloadOpen(true)}
             onPrefetchModal={handlePrefetchModal}
           />
         )}
@@ -210,6 +253,13 @@ export default function App() {
           <AndroidAnalysisHub
             isOpen={isAndroidHubOpen}
             onClose={() => setIsAndroidHubOpen(false)}
+          />
+        )}
+
+        {isAndroidDownloadOpen && (
+          <AndroidDownloadModal
+            isOpen={isAndroidDownloadOpen}
+            onClose={() => setIsAndroidDownloadOpen(false)}
           />
         )}
 

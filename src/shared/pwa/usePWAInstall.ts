@@ -12,9 +12,15 @@ export function usePWAInstall() {
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      window.navigator.standalone === true;
+    let isStandalone = false;
+    try {
+      isStandalone =
+        (typeof window.matchMedia === 'function' &&
+          window.matchMedia('(display-mode: standalone)').matches) ||
+        window.navigator.standalone === true;
+    } catch {
+      isStandalone = window.navigator.standalone === true;
+    }
     setIsInstalled(isStandalone);
 
     const userAgent = window.navigator.userAgent.toLowerCase();

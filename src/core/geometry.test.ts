@@ -50,8 +50,8 @@ test('expandRadial: N=8 expansion produces 8 strokes', () => {
   };
   const expanded = expandRadial(stroke, 8, { x: 100, y: 100 });
   assert.equal(expanded.length, 8);
-  assert.equal(expanded[0].id, 's1');
-  assert.equal(expanded[1].id, 's1_r1');
+  assert.equal(expanded[0]?.id, 's1');
+  assert.equal(expanded[1]?.id, 's1_r1');
 });
 
 test('expandMirrorRadial: N=6 expansion produces 12 strokes', () => {
@@ -79,7 +79,7 @@ test('L-System expansion: expands axiom according to grammatical rules', () => {
 test('interpretTurtle: produces polylines for simple steps', () => {
   const polylines = interpretTurtle('FF', 10, 90, { x: 0, y: 0 });
   assert.ok(polylines.length >= 1);
-  assert.equal(polylines[0].length, 3);
+  assert.equal(polylines[0]?.length, 3);
 });
 
 test('exportToSVG: generates valid SVG markup with vector geometry', () => {

@@ -11,6 +11,7 @@
 import { ok, err, type Result } from '../../../shared/lib/result.ts';
 import { trimAllRegisteredCaches } from '../../../shared/lib/memoCache.ts';
 import { RESOURCE_GUARD_LIMITS } from '../model/constants.ts';
+import { MANDALA_MESSAGES } from '../model/messages.ts';
 import {
   CpuLoadState,
   MemoryPressureLevel,
@@ -96,7 +97,10 @@ export function evaluateWorkloadAdmission(params: {
   if (nextWedgeCount > RESOURCE_GUARD_LIMITS.maxSceneWedges) {
     return err({
       code: ResourceGuardErrorCode.OverSceneWedges,
-      message: `Limite sicurezza CPU/Scena raggiunto: ${nextWedgeCount} tratti superano il tetto massimo di ${RESOURCE_GUARD_LIMITS.maxSceneWedges}. Esegui Flush Cache o pulisci la tela.`,
+      message: MANDALA_MESSAGES.guards.overSceneWedges(
+        nextWedgeCount,
+        RESOURCE_GUARD_LIMITS.maxSceneWedges
+      ),
     });
   }
 
@@ -105,7 +109,10 @@ export function evaluateWorkloadAdmission(params: {
   if (totalPoints > RESOURCE_GUARD_LIMITS.maxScenePoints) {
     return err({
       code: ResourceGuardErrorCode.OverMemoryPoints,
-      message: `Protezione Anti Over-Memory: ${totalPoints.toLocaleString()} punti superano il limite sicuro di ${RESOURCE_GUARD_LIMITS.maxScenePoints.toLocaleString()} punti.`,
+      message: MANDALA_MESSAGES.guards.overScenePoints(
+        totalPoints,
+        RESOURCE_GUARD_LIMITS.maxScenePoints
+      ),
     });
   }
 
@@ -114,7 +121,10 @@ export function evaluateWorkloadAdmission(params: {
   if (estimatedBytes > RESOURCE_GUARD_LIMITS.l2HardMaxBytes) {
     return err({
       code: ResourceGuardErrorCode.OverMemoryHeap,
-      message: `Protezione Anti Over-Memory: stima heap ${(estimatedBytes / (1024 * 1024)).toFixed(1)} MB oltre la soglia di ${(RESOURCE_GUARD_LIMITS.l2HardMaxBytes / (1024 * 1024)).toFixed(0)} MB.`,
+      message: MANDALA_MESSAGES.guards.overMemoryHeap(
+        (estimatedBytes / (1024 * 1024)).toFixed(1),
+        (RESOURCE_GUARD_LIMITS.l2HardMaxBytes / (1024 * 1024)).toFixed(0)
+      ),
     });
   }
 
@@ -127,7 +137,10 @@ export function evaluateWorkloadAdmission(params: {
   if (expandedPrimitives > RESOURCE_GUARD_LIMITS.maxExpandedPrimitivesPerFrame) {
     return err({
       code: ResourceGuardErrorCode.OverCpuPrimitives,
-      message: `Protezione Anti Over-CPU: ${expandedPrimitives.toLocaleString()} primitive simmetriche superano il budget massimo di ${RESOURCE_GUARD_LIMITS.maxExpandedPrimitivesPerFrame.toLocaleString()} per frame.`,
+      message: MANDALA_MESSAGES.guards.overCpuPrimitives(
+        expandedPrimitives,
+        RESOURCE_GUARD_LIMITS.maxExpandedPrimitivesPerFrame
+      ),
     });
   }
 

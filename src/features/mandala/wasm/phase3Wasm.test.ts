@@ -112,13 +112,19 @@ test('Phase 3 WASM achieves <= 1e-12 geometric parity with JS across Radial and 
 
     let maxDelta = 0;
     for (let s = 0; s < jsRes.value.length; s++) {
-      assert.equal(reconstructed[s].id, jsRes.value[s].id);
-      assert.equal(reconstructed[s].points.length, jsRes.value[s].points.length);
-      for (let p = 0; p < jsRes.value[s].points.length; p++) {
+      const recStroke: WedgeStroke | undefined = reconstructed[s];
+      const jsStroke: WedgeStroke | undefined = jsRes.value[s];
+      assert.ok(recStroke !== undefined && jsStroke !== undefined);
+      assert.equal(recStroke.id, jsStroke.id);
+      assert.equal(recStroke.points.length, jsStroke.points.length);
+      for (let p = 0; p < jsStroke.points.length; p++) {
+        const rp = recStroke.points[p];
+        const jp = jsStroke.points[p];
+        assert.ok(rp !== undefined && jp !== undefined);
         maxDelta = Math.max(
           maxDelta,
-          Math.abs(reconstructed[s].points[p].x - jsRes.value[s].points[p].x),
-          Math.abs(reconstructed[s].points[p].y - jsRes.value[s].points[p].y)
+          Math.abs(rp.x - jp.x),
+          Math.abs(rp.y - jp.y)
         );
       }
     }

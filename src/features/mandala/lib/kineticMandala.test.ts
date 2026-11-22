@@ -109,13 +109,15 @@ test('Kinetic Mandala: radial band partitioning classifies inner, mid, outer and
 
   const bands = partitionWedgesIntoRadialBands([innerStroke, midStroke, outerStroke]);
   assert.equal(bands.length, 3);
-  assert.equal(bands[0].strokes.length, 1);
-  assert.equal(bands[0].strokes[0].id, 'inner');
-  assert.equal(bands[1].strokes.length, 1);
-  assert.equal(bands[1].strokes[0].id, 'mid');
-  assert.equal(bands[2].strokes.length, 1);
-  assert.equal(bands[2].strokes[0].id, 'outer');
-  assert.ok(bands[0].speedMultiplier > 0 && bands[1].speedMultiplier < 0);
+  const [b0, b1, b2] = bands;
+  assert.ok(b0 && b1 && b2);
+  assert.equal(b0.strokes.length, 1);
+  assert.equal(b0.strokes[0]?.id, 'inner');
+  assert.equal(b1.strokes.length, 1);
+  assert.equal(b1.strokes[0]?.id, 'mid');
+  assert.equal(b2.strokes.length, 1);
+  assert.equal(b2.strokes[0]?.id, 'outer');
+  assert.ok(b0.speedMultiplier > 0 && b1.speedMultiplier < 0);
 
   const emptyBands = partitionWedgesIntoRadialBands([]);
   assert.equal(emptyBands.every((b) => b.strokes.length === 0), true);
@@ -137,7 +139,7 @@ test('Kinetic Mandala: stroke replay slice reveals tip-by-tip without mutating s
 
   const partialEarly = computeStrokeReplaySlice(input, 0.25);
   assert.equal(partialEarly.strokes.length, 1);
-  assert.ok(partialEarly.strokes[0].points.length < 6);
+  assert.ok((partialEarly.strokes[0]?.points.length ?? 999) < 6);
 
   const full = computeStrokeReplaySlice(input, 1);
   assert.equal(full.strokes.length, 2);
@@ -156,7 +158,7 @@ test('Kinetic Mandala: breathing scale & band angular offset stay bounded', () =
   assert.ok(cw > 0 && ccw < 0);
   assert.equal(
     computeBandAngleRad(0, 1, KINETIC_LIMITS.maxSpeed * 10),
-    KINETIC_LIMITS.ringSpeedMultipliers[0] * KINETIC_LIMITS.maxSpeed
+    (KINETIC_LIMITS.ringSpeedMultipliers[0] ?? 1) * KINETIC_LIMITS.maxSpeed
   );
 });
 

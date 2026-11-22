@@ -32,17 +32,21 @@ import {
   CpuLoadState,
   KineticMode,
   MemoryPressureLevel,
+  ModalPrefetchKey,
   type ResourceHealthSnapshot,
 } from '../features/mandala/model/types.ts';
 import { RESOURCE_GUARD_LIMITS } from '../features/mandala/model/constants.ts';
 import { getResourceHealthSnapshot } from '../features/mandala/lib/resourceGuard.ts';
+import { MANDALA_MESSAGES } from '../features/mandala/model/messages.ts';
+import { isAndroidHybridHost } from '../shared/lib/androidBridge.ts';
 import { useMandalaStore } from '../features/mandala/model/store.ts';
 
 export interface AppMenuActions {
   readonly onOpenFractalModal: () => void;
   readonly onOpenExport: () => void;
   readonly onOpenAndroidHub: () => void;
-  readonly onPrefetchModal?: (modal: 'fractal' | 'export' | 'hub') => void;
+  readonly onOpenAndroidDownload?: () => void;
+  readonly onPrefetchModal?: (modal: ModalPrefetchKey) => void;
 }
 
 interface MenuBodyProps extends AppMenuActions {
@@ -83,7 +87,16 @@ function resolveHealthPresentation(health: ResourceHealthSnapshot): {
 }
 
 export const AppMenuSection: React.FC<MenuBodyProps> = memo(
-  ({ onOpenFractalModal, onOpenExport, onOpenAndroidHub, onPrefetchModal, onItemComplete, compact = false }) => {
+  ({
+    onOpenFractalModal,
+    onOpenExport,
+    onOpenAndroidHub,
+    onOpenAndroidDownload,
+    onPrefetchModal,
+    onItemComplete,
+    compact = false,
+  }) => {
+    const insideAndroidHost = isAndroidHybridHost();
     const wedges = useMandalaStore((s) => s.wedges);
     const symmetryParams = useMandalaStore((s) => s.symmetryParams);
     const autoProtectEnabled = useMandalaStore((s) => s.autoProtectEnabled);
@@ -146,8 +159,8 @@ export const AppMenuSection: React.FC<MenuBodyProps> = memo(
           <div className="grid grid-cols-1 gap-1">
             <button
               type="button"
-              onMouseEnter={() => onPrefetchModal?.('fractal')}
-              onFocus={() => onPrefetchModal?.('fractal')}
+              onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.Fractal)}
+              onFocus={() => onPrefetchModal?.(ModalPrefetchKey.Fractal)}
               onClick={() => {
                 onOpenFractalModal();
                 onItemComplete?.();
@@ -162,8 +175,8 @@ export const AppMenuSection: React.FC<MenuBodyProps> = memo(
 
             <button
               type="button"
-              onMouseEnter={() => onPrefetchModal?.('export')}
-              onFocus={() => onPrefetchModal?.('export')}
+              onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.Export)}
+              onFocus={() => onPrefetchModal?.(ModalPrefetchKey.Export)}
               onClick={() => {
                 onOpenExport();
                 onItemComplete?.();
@@ -178,8 +191,8 @@ export const AppMenuSection: React.FC<MenuBodyProps> = memo(
 
             <button
               type="button"
-              onMouseEnter={() => onPrefetchModal?.('hub')}
-              onFocus={() => onPrefetchModal?.('hub')}
+              onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.Hub)}
+              onFocus={() => onPrefetchModal?.(ModalPrefetchKey.Hub)}
               onClick={() => {
                 onOpenAndroidHub();
                 onItemComplete?.();
@@ -191,6 +204,29 @@ export const AppMenuSection: React.FC<MenuBodyProps> = memo(
                 <span>Motore Fase 5 &amp; Diagnostica</span>
               </span>
             </button>
+
+            {onOpenAndroidDownload && (
+              <button
+                type="button"
+                data-testid="menu-android-apk-button"
+                onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.AndroidDownload)}
+                onFocus={() => onPrefetchModal?.(ModalPrefetchKey.AndroidDownload)}
+                onClick={() => {
+                  onOpenAndroidDownload();
+                  onItemComplete?.();
+                }}
+                className="w-full min-h-[44px] flex items-center justify-between px-3 py-2 text-xs font-medium text-cyan-200 hover:text-white hover:bg-slate-800 rounded-lg transition text-left"
+              >
+                <span className="flex items-center gap-2.5">
+                  <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>
+                    {insideAndroidHost
+                      ? MANDALA_MESSAGES.distribution.menuButtonAndroid
+                      : MANDALA_MESSAGES.distribution.menuButtonWeb}
+                  </span>
+                </span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -372,7 +408,11 @@ export const AppMenuDropdown: React.FC<AppMenuActions> = (actions) => {
   useEffect(() => {
     if (!isOpen) return;
     const handleOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      if (
+        containerRef.current &&
+        e.target instanceof Node &&
+        !containerRef.current.contains(e.target)
+      ) {
         setIsOpen(false);
       }
     };

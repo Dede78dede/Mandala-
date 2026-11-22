@@ -24,8 +24,15 @@ export function assertNever(x: never): never {
   throw new Error(`Unhandled discriminated union variant: ${JSON.stringify(x)}`);
 }
 
+export enum OperationStatus {
+  Idle = 'idle',
+  Pending = 'pending',
+  Success = 'success',
+  Error = 'error',
+}
+
 export type OperationState<T, E = string> =
-  | { status: 'idle' }
-  | { status: 'pending' }
-  | { status: 'success'; data: T }
-  | { status: 'error'; error: E };
+  | { status: OperationStatus.Idle }
+  | { status: OperationStatus.Pending }
+  | { status: OperationStatus.Success; data: T }
+  | { status: OperationStatus.Error; error: E };

@@ -68,7 +68,7 @@ test('Botanical Stamps: all archetypes produce bounded finite strokes anchored a
     dash: [6, 4],
   });
   assert.equal(multiLotus.length, STAMP_LIMITS.multiLotusLayerCount);
-  assert.deepEqual(multiLotus[0].dash, [6, 4]);
+  assert.deepEqual(multiLotus[0]?.dash, [6, 4]);
 });
 
 test('Stamp Placement Vector: tap aims radially outward while drag adapts orientation and clamped radius', () => {
@@ -142,8 +142,8 @@ test('Morph Interpolator: uniform arc-length resampling, color lerp, and unmatch
     MORPH_LIMITS.resampledPointCount
   );
   assert.equal(resampled.length, MORPH_LIMITS.resampledPointCount);
-  assert.equal(resampled[0].x, 0);
-  assert.equal(resampled[resampled.length - 1].x, 100);
+  assert.equal(resampled[0]?.x, 0);
+  assert.equal(resampled[resampled.length - 1]?.x, 100);
 
   const midColor = interpolateHexColor('#000000', '#ffffff', 0.5);
   assert.equal(midColor.toLowerCase(), '#808080');
@@ -190,6 +190,7 @@ test('Morph Interpolator: uniform arc-length resampling, color lerp, and unmatch
   assert.equal(atZero.length, 1);
   const atMid = interpolateStrokeScene(sceneA, sceneB, 0.5);
   assert.equal(atMid.length, 2);
+  assert.ok(atMid[0] && atMid[1]);
   assert.equal(atMid[0].points.length, MORPH_LIMITS.resampledPointCount);
   assert.equal(atMid[0].strokeWidth, 4);
   assert.ok(atMid[1].opacity > 0 && atMid[1].opacity < 0.8);

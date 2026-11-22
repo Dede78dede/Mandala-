@@ -8,7 +8,8 @@
  */
 
 import { Result, ok, err } from '../../../shared/lib/result.ts';
-import { MANDALA_LIMITS } from '../model/constants.ts';
+import { estimateLSystemComplexity } from '../lib/lsystem.ts';
+import { MANDALA_LIMITS, WASM_ABI_SPEC } from '../model/constants.ts';
 import {
   MirrorMode,
   SymmetryStrategyKind,
@@ -155,8 +156,10 @@ function withWasmArena<T>(
 export function packPointsToFloat64(points: readonly Point[]): Float64Array {
   const out = new Float64Array(points.length * 2);
   for (let i = 0; i < points.length; i++) {
-    out[i * 2] = points[i].x;
-    out[i * 2 + 1] = points[i].y;
+    const pt = points[i];
+    if (!pt) continue;
+    out[i * 2] = pt.x;
+    out[i * 2 + 1] = pt.y;
   }
   return out;
 }
@@ -244,45 +247,16 @@ function estimateLSystemCapacity(
   rules: Readonly<Record<string, string>>,
   generations: number
 ): { bufCap: number; maxPts: number; maxPolys: number } {
-  let counts = new Map<string, number>();
-  for (let i = 0; i < axiom.length; i++) {
-    const ch = axiom[i];
-    counts.set(ch, (counts.get(ch) ?? 0) + 1);
-  }
-  for (let g = 0; g < generations; g++) {
-    const next = new Map<string, number>();
-    for (const [ch, cnt] of counts.entries()) {
-      const repl = rules[ch] ?? ch;
-      for (let k = 0; k < repl.length; k++) {
-        const rc = repl[k];
-        next.set(rc, (next.get(rc) ?? 0) + cnt);
-      }
-    }
-    counts = next;
-  }
-
-  let totalLen = 0;
-  let moves = 0;
-  let breaks = 0;
-  for (const [ch, cnt] of counts.entries()) {
-    totalLen += cnt;
-    if (ch === 'F' || ch === 'A' || ch === 'B' || ch === 'G' || ch === 'f') {
-      moves += cnt;
-    }
-    if (ch === ']' || ch === 'f') {
-      breaks += cnt;
-    }
-  }
-
+  const est = estimateLSystemComplexity(axiom, rules, generations);
   return {
-    bufCap: Math.max(256, totalLen + axiom.length + 64),
-    maxPts: Math.max(64, moves + breaks + 32),
-    maxPolys: Math.max(32, breaks + 32),
+    bufCap: Math.max(256, est.instructionLength + axiom.length + 64),
+    maxPts: Math.max(64, est.moveSegments + est.breakCount + 32),
+    maxPolys: Math.max(32, est.breakCount + 32),
   };
 }
 
 /**
- * Phase 5 L-System Grammar Expansion + Turtle Graphics + Radial Symmetry Kernel in WASM linear memory.
+ * Phase 5 L-System Grammar Expansion + Turtle Graphics + optional Radial Symmetry Kernel in WASM linear memory.
  */
 export function expandLSystemWithWasm(
   instance: WasmSymmetryInstance,
@@ -292,13 +266,13 @@ export function expandLSystemWithWasm(
   stepLength: number,
   angleDegrees: number,
   order: number,
-  center: Point
+  center: Point,
+  baseOnly: boolean = false
 ): Result<WasmLSystemGeometry, string> {
   const { exports } = instance;
-  if (
-    typeof exports.expand_lsystem_bytes !== 'function' ||
-    typeof exports.interpret_lsystem_turtle_f64 !== 'function'
-  ) {
+  const expandFn = exports.expand_lsystem_bytes;
+  const interpretFn = exports.interpret_lsystem_turtle_f64;
+  if (typeof expandFn !== 'function' || typeof interpretFn !== 'function') {
     return err('Kernel WASM L-System non esportato in questa build.');
   }
   if (order < 1 || order > MANDALA_LIMITS.maxOrder) {
@@ -318,14 +292,16 @@ export function expandLSystemWithWasm(
     const t0 = performance.now();
 
     const axiomPtr = exports.alloc_bytes(Math.max(8, axiomBytes.length));
-    const rulesTablePtr = exports.alloc_bytes(1024);
+    const rulesTablePtr = exports.alloc_bytes(WASM_ABI_SPEC.rulesTableBytes);
     const rulePtrs = ruleEntries.map((r) => exports.alloc_bytes(Math.max(8, r.bytes.length)));
     const bufAPtr = exports.alloc_bytes(bufCap);
     const bufBPtr = exports.alloc_bytes(bufCap);
-    const outMetaPtr = exports.alloc_bytes(16);
-    const stackPtr = exports.alloc_bytes(256 * 24);
-    const outPtsPtr = exports.alloc_bytes(maxPts * 16);
-    const outLensPtr = exports.alloc_bytes(maxPolys * 4);
+    const outMetaPtr = exports.alloc_bytes(WASM_ABI_SPEC.outMetaBytes);
+    const stackPtr = exports.alloc_bytes(
+      WASM_ABI_SPEC.turtleStackMaxDepth * WASM_ABI_SPEC.turtleStackFrameBytes
+    );
+    const outPtsPtr = exports.alloc_bytes(maxPts * WASM_ABI_SPEC.pointStrideF64Bytes);
+    const outLensPtr = exports.alloc_bytes(maxPolys * WASM_ABI_SPEC.polyLengthStrideBytes);
 
     if (
       axiomPtr < 0 ||
@@ -345,18 +321,19 @@ export function expandLSystemWithWasm(
     const memI32 = new Int32Array(exports.memory.buffer);
 
     memU8.set(axiomBytes, axiomPtr);
-    memU8.fill(0, rulesTablePtr, rulesTablePtr + 1024);
+    memU8.fill(0, rulesTablePtr, rulesTablePtr + WASM_ABI_SPEC.rulesTableBytes);
 
     for (let i = 0; i < ruleEntries.length; i++) {
       const entry = ruleEntries[i];
       const rPtr = rulePtrs[i];
+      if (!entry || rPtr === undefined) continue;
       memU8.set(entry.bytes, rPtr);
       const slotIdx = (rulesTablePtr + (entry.code << 3)) >> 2;
       memI32[slotIdx] = rPtr;
       memI32[slotIdx + 1] = entry.bytes.length;
     }
 
-    const expandedLen = exports.expand_lsystem_bytes!(
+    const expandedLen = expandFn(
       axiomPtr,
       axiomBytes.length,
       rulesTablePtr,
@@ -370,11 +347,12 @@ export function expandLSystemWithWasm(
       return err('Superata capacità buffer espansione L-System in WASM.');
     }
 
-    const finalInstrPtr = memI32[outMetaPtr >> 2];
-    const finalInstrLen = memI32[(outMetaPtr >> 2) + 1];
+    const metaIdx = outMetaPtr >> 2;
+    const finalInstrPtr = memI32[metaIdx] ?? 0;
+    const finalInstrLen = memI32[metaIdx + 1] ?? 0;
     const radAngle = (angleDegrees * Math.PI) / 180;
 
-    const polyCount = exports.interpret_lsystem_turtle_f64!(
+    const polyCount = interpretFn(
       finalInstrPtr,
       finalInstrLen,
       stepLength,
@@ -397,7 +375,7 @@ export function expandLSystemWithWasm(
     let baseSegmentCount = 0;
     const lensStart = outLensPtr >> 2;
     for (let i = 0; i < polyCount; i++) {
-      const len = latestI32[lensStart + i];
+      const len = latestI32[lensStart + i] ?? 0;
       baseLengths[i] = len;
       totalBasePts += len;
       baseSegmentCount += Math.max(0, len - 1);
@@ -414,8 +392,23 @@ export function expandLSystemWithWasm(
       });
     }
 
-    const anglesPtr = exports.alloc_bytes(order * 16);
-    const radialOutPtr = exports.alloc_bytes(order * totalBasePts * 16);
+    if (baseOnly) {
+      const memF64 = new Float64Array(exports.memory.buffer);
+      const baseStart = outPtsPtr >> 3;
+      const resultBuffer = new Float64Array(totalBasePts * 2);
+      resultBuffer.set(memF64.subarray(baseStart, baseStart + totalBasePts * 2));
+      return ok({
+        buffer: resultBuffer,
+        baseLengths,
+        order: 1,
+        baseSegmentCount,
+        expandedSegmentCount: baseSegmentCount * order,
+        computeMs: performance.now() - t0,
+      });
+    }
+
+    const anglesPtr = exports.alloc_bytes(order * WASM_ABI_SPEC.pointStrideF64Bytes);
+    const radialOutPtr = exports.alloc_bytes(order * totalBasePts * WASM_ABI_SPEC.pointStrideF64Bytes);
     if (anglesPtr < 0 || radialOutPtr < 0) {
       return err('Memoria lineare WASM esaurita durante espansione radiale L-System.');
     }
@@ -467,7 +460,7 @@ export function reconstructFractalStrokesFromBuffer(
 
   let basePointTotal = 0;
   for (let i = 0; i < polyCount; i++) {
-    basePointTotal += baseLengths[i];
+    basePointTotal += baseLengths[i] ?? 0;
   }
 
   const strokes: WedgeStroke[] = new Array<WedgeStroke>(polyCount * order);
@@ -475,7 +468,7 @@ export function reconstructFractalStrokesFromBuffer(
   let polyOffsetFloats = 0;
 
   for (let pIdx = 0; pIdx < polyCount; pIdx++) {
-    const ptCount = baseLengths[pIdx];
+    const ptCount = baseLengths[pIdx] ?? 0;
     const baseId = `${idPrefix}_${pIdx}`;
 
     for (let fold = 0; fold < order; fold++) {
@@ -483,7 +476,7 @@ export function reconstructFractalStrokesFromBuffer(
       const pts: Point[] = new Array<Point>(ptCount);
       for (let k = 0; k < ptCount; k++) {
         const idx = foldBaseFloat + k * 2;
-        pts[k] = { x: buffer[idx], y: buffer[idx + 1] };
+        pts[k] = { x: buffer[idx] ?? 0, y: buffer[idx + 1] ?? 0 };
       }
 
       strokes[outIdx++] = {
@@ -513,15 +506,17 @@ export function reconstructWedgesFromBuffer(
   const isMirror = params.strategyId === SymmetryStrategyKind.MirrorRadial;
 
   for (let sIdx = 0; sIdx < lengths.length; sIdx++) {
-    const ptCount = lengths[sIdx];
+    const ptCount = lengths[sIdx] ?? 0;
     const pts: Point[] = new Array<Point>(ptCount);
     for (let p = 0; p < ptCount; p++) {
       const base = floatOffset + p * 2;
+      const x = buffer[base] ?? 0;
+      const y = buffer[base + 1] ?? 0;
       const origPressure = sourceWedge.points[p]?.pressure;
       pts[p] =
         origPressure !== undefined
-          ? { x: buffer[base], y: buffer[base + 1], pressure: origPressure }
-          : { x: buffer[base], y: buffer[base + 1] };
+          ? { x, y, pressure: origPressure }
+          : { x, y };
     }
     floatOffset += ptCount * 2;
 
@@ -539,6 +534,37 @@ export function reconstructWedgesFromBuffer(
   }
 
   return strokes;
+}
+
+export interface FlatPointPolylineView {
+  readonly strokeCount: number;
+  readonly buffer: Float64Array;
+  readonly lengths: Uint32Array;
+}
+
+export function createFlatBufferView(
+  buffer: Float64Array,
+  lengths: Uint32Array
+): FlatPointPolylineView {
+  return {
+    strokeCount: lengths.length,
+    buffer,
+    lengths,
+  };
+}
+
+export function forEachFlatPolyline(
+  view: FlatPointPolylineView,
+  visitor: (floatOffset: number, pointCount: number, strokeIndex: number) => void
+): void {
+  let offset = 0;
+  for (let i = 0; i < view.strokeCount; i++) {
+    const count = view.lengths[i] ?? 0;
+    if (count > 0) {
+      visitor(offset, count, i);
+      offset += count * 2;
+    }
+  }
 }
 
 export function triggerWasmPanicForTest(instance: WasmSymmetryInstance): Result<void, string> {

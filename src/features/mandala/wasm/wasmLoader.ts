@@ -4,16 +4,24 @@
  *
  * Lazy Module-Scope WASM Worker Loader & Capability Client (MANDALA-PH3-WASM-001 Tasks 3.1.D & 3.1.E).
  * Excluded from initial critical execution; instantiated lazily only when requested or triggered
- * by empirical threshold / feature flag. Falls back cleanly to JS on Worker/WASM failure.
+ * by empirical threshold / feature flag. Enforces per-job timeouts and clean crash recovery.
  */
 
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from '../../../shared/lib/diagnostics.ts';
 import { Result, ok, err } from '../../../shared/lib/result.ts';
 import {
   LOGICAL_CENTER,
   MANDALA_LIMITS,
+  WASM_ABI_SPEC,
   WASM_CONFIG,
   isWasmSymmetryFlagEnabled,
 } from '../model/constants.ts';
+import { MANDALA_MESSAGES } from '../model/messages.ts';
 import {
   MirrorMode,
   SymmetryStrategyKind,
@@ -61,6 +69,7 @@ export interface WasmWorkerClient {
     color: string;
     strokeWidth: number;
     center?: Point;
+    baseOnly?: boolean;
   }): Promise<Result<WasmLSystemResult, string>>;
   triggerPanicTest(): Promise<Result<void, string>>;
   dispose(): void;
@@ -69,20 +78,23 @@ export interface WasmWorkerClient {
 let cachedClientPromise: Promise<Result<WasmWorkerClient, string>> | null = null;
 let cachedInlineWasmPromise: Promise<Result<WasmSymmetryInstance, string>> | null = null;
 
-/**
- * Lazy-loads the standalone `.wasm` binary directly (used by Benchmark Matrix
- * to compare JS vs raw WASM compute cleanly without worker messaging overhead).
- */
 export function loadWasmSymmetryInstance(): Promise<Result<WasmSymmetryInstance, string>> {
   if (!cachedInlineWasmPromise) {
     cachedInlineWasmPromise = (async () => {
       if (typeof fetch === 'undefined') {
-        return err('Fetch API non disponibile per caricamento WASM.');
+        return err(MANDALA_MESSAGES.wasmWorker.fetchNotAvailable);
       }
       try {
         const res = await fetch(WASM_CONFIG.binaryUrl);
         return await instantiateMandalaWasm(res);
       } catch (e) {
+        reportDiagnostic({
+          severity: DiagnosticSeverity.Warning,
+          source: DiagnosticSource.WasmWorker,
+          code: DomainErrorCode.WasmInitFailed,
+          message: 'Caricamento diretto modulo WASM fallito.',
+          cause: e,
+        });
         return err(e instanceof Error ? e.message : 'Caricamento WASM fallito.');
       }
     })();
@@ -90,9 +102,6 @@ export function loadWasmSymmetryInstance(): Promise<Result<WasmSymmetryInstance,
   return cachedInlineWasmPromise;
 }
 
-/**
- * React 19 `use()`-safe cached module-scope Promise creating and initializing the persistent Worker.
- */
 export function loadWasmWorkerClient(): Promise<Result<WasmWorkerClient, string>> {
   if (!cachedClientPromise) {
     cachedClientPromise = createPersistentWorkerClient();
@@ -124,9 +133,21 @@ type PendingJobPayload =
       roundTripMs: number;
     };
 
+interface PendingJobEntry {
+  readonly resolveJob: (res: Result<PendingJobPayload, string>) => void;
+  readonly tStart: number;
+  readonly timeoutId: ReturnType<typeof setTimeout>;
+}
+
 async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, string>> {
   if (typeof Worker === 'undefined') {
-    return err('Web Worker non supportati in questo ambiente (fallback JS attivo).');
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Info,
+      source: DiagnosticSource.WasmWorker,
+      code: DomainErrorCode.WasmFallbackToJs,
+      message: MANDALA_MESSAGES.wasmWorker.workerNotSupported,
+    });
+    return err(MANDALA_MESSAGES.wasmWorker.workerNotSupported);
   }
 
   return new Promise<Result<WasmWorkerClient, string>>((resolve) => {
@@ -136,7 +157,15 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
         type: 'module',
       });
     } catch (e) {
-      resolve(err(e instanceof Error ? e.message : 'Creazione Web Worker fallita.'));
+      reportDiagnostic({
+        severity: DiagnosticSeverity.Warning,
+        source: DiagnosticSource.WasmWorker,
+        code: DomainErrorCode.WasmInitFailed,
+        message: MANDALA_MESSAGES.wasmWorker.workerCreationFailed,
+        userNotice: MANDALA_MESSAGES.wasmWorker.fallbackNotice,
+        cause: e,
+      });
+      resolve(err(e instanceof Error ? e.message : MANDALA_MESSAGES.wasmWorker.workerCreationFailed));
       return;
     }
 
@@ -144,21 +173,64 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
     let disposed = false;
     let settledInit = false;
 
-    const pendingJobs = new Map<
-      number,
-      {
-        resolveJob: (res: Result<PendingJobPayload, string>) => void;
-        tStart: number;
+    const pendingJobs = new Map<number, PendingJobEntry>();
+
+    const settlePendingJob = (jobId: number, outcome: Result<PendingJobPayload, string>): void => {
+      const pending = pendingJobs.get(jobId);
+      if (!pending) return;
+      pendingJobs.delete(jobId);
+      clearTimeout(pending.timeoutId);
+      pending.resolveJob(outcome);
+    };
+
+    const failAllPendingJobs = (reason: string): void => {
+      for (const [id, pending] of pendingJobs.entries()) {
+        clearTimeout(pending.timeoutId);
+        pending.resolveJob(err(reason));
+        pendingJobs.delete(id);
       }
-    >();
+    };
+
+    const registerJob = (
+      jobId: number,
+      resolveJob: (res: Result<PendingJobPayload, string>) => void
+    ): void => {
+      const timeoutId = setTimeout(() => {
+        if (!pendingJobs.has(jobId)) return;
+        const msg = MANDALA_MESSAGES.wasmWorker.timeoutError(jobId);
+        reportDiagnostic({
+          severity: DiagnosticSeverity.Warning,
+          source: DiagnosticSource.WasmWorker,
+          code: DomainErrorCode.WasmWorkerTimeout,
+          message: msg,
+          userNotice: MANDALA_MESSAGES.wasmWorker.fallbackNotice,
+        });
+        settlePendingJob(jobId, err(msg));
+      }, WASM_ABI_SPEC.workerJobTimeoutMs);
+
+      pendingJobs.set(jobId, {
+        resolveJob,
+        tStart: performance.now(),
+        timeoutId,
+      });
+    };
 
     const initTimeout = setTimeout(() => {
       if (!settledInit) {
         settledInit = true;
+        disposed = true;
         worker.terminate();
-        resolve(err('Timeout inizializzazione Web Worker WASM.'));
+        cachedClientPromise = null;
+        reportDiagnostic({
+          severity: DiagnosticSeverity.Warning,
+          source: DiagnosticSource.WasmWorker,
+          code: DomainErrorCode.WasmWorkerTimeout,
+          message: MANDALA_MESSAGES.wasmWorker.initTimeoutError,
+          userNotice: MANDALA_MESSAGES.wasmWorker.fallbackNotice,
+        });
+        resolve(err(MANDALA_MESSAGES.wasmWorker.initTimeoutError));
       }
-    }, 6000);
+    }, WASM_ABI_SPEC.workerInitTimeoutMs);
 
     worker.onmessage = (event: MessageEvent<WorkerOutboundMessage>) => {
       const msg = event.data;
@@ -174,16 +246,16 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
 
             async expandWedgeZeroCopy(wedge, params, center = LOGICAL_CENTER) {
               if (disposed) {
-                return err('Worker WASM già dismesso.');
+                return err(MANDALA_MESSAGES.wasmWorker.workerDisposed);
               }
               if (params.strategyId === SymmetryStrategyKind.Fractal) {
-                return err('Usare expandLSystemZeroCopy per la strategia frattale.');
+                return err(MANDALA_MESSAGES.wasmWorker.useLSystemMethod);
               }
               const flatPoints = packPointsToFloat64(wedge.points);
               const jobId = ++jobSeq;
 
               const jobRes = await new Promise<Result<PendingJobPayload, string>>((resolveJob) => {
-                pendingJobs.set(jobId, { resolveJob, tStart: performance.now() });
+                registerJob(jobId, resolveJob);
                 const payload: WorkerInboundMessage = {
                   type: WorkerMsgType.Expand,
                   jobId,
@@ -197,12 +269,13 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
                   cx: center.x,
                   cy: center.y,
                 };
-                // Zero-copy ownership transfer of input Float64Array
                 worker.postMessage(payload, [flatPoints.buffer]);
               });
 
               if (!jobRes.ok) return err(jobRes.error);
-              if (jobRes.value.kind !== 'expand') return err('Risposta worker inattesa.');
+              if (jobRes.value.kind !== 'expand') {
+                return err(MANDALA_MESSAGES.wasmWorker.unexpectedReply);
+              }
 
               return ok({
                 strokes: reconstructWedgesFromBuffer(
@@ -218,13 +291,14 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
 
             async expandLSystemZeroCopy(req) {
               if (disposed) {
-                return err('Worker WASM già dismesso.');
+                return err(MANDALA_MESSAGES.wasmWorker.workerDisposed);
               }
               const center = req.center ?? LOGICAL_CENTER;
               const jobId = ++jobSeq;
+              const baseOnly = Boolean(req.baseOnly);
 
               const jobRes = await new Promise<Result<PendingJobPayload, string>>((resolveJob) => {
-                pendingJobs.set(jobId, { resolveJob, tStart: performance.now() });
+                registerJob(jobId, resolveJob);
                 const payload: WorkerInboundMessage = {
                   type: WorkerMsgType.ExpandLSystem,
                   jobId,
@@ -236,19 +310,22 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
                   order: req.order,
                   cx: center.x,
                   cy: center.y,
+                  baseOnly,
                 };
                 worker.postMessage(payload);
               });
 
               if (!jobRes.ok) return err(jobRes.error);
-              if (jobRes.value.kind !== 'lsystem') return err('Risposta worker L-System inattesa.');
+              if (jobRes.value.kind !== 'lsystem') {
+                return err(MANDALA_MESSAGES.wasmWorker.unexpectedLSystemReply);
+              }
 
               return ok({
                 strokes: reconstructFractalStrokesFromBuffer(
                   req.idPrefix,
                   jobRes.value.buffer,
                   jobRes.value.baseLengths,
-                  jobRes.value.order,
+                  baseOnly ? 1 : jobRes.value.order,
                   req.color,
                   req.strokeWidth
                 ),
@@ -260,13 +337,10 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
             },
 
             async triggerPanicTest() {
-              if (disposed) return err('Worker dismesso.');
+              if (disposed) return err(MANDALA_MESSAGES.wasmWorker.workerDisposed);
               const jobId = ++jobSeq;
               const panicRes = await new Promise<Result<unknown, string>>((resolveJob) => {
-                pendingJobs.set(jobId, {
-                  resolveJob: (r) => resolveJob(r),
-                  tStart: performance.now(),
-                });
+                registerJob(jobId, (r) => resolveJob(r));
                 worker.postMessage({
                   type: WorkerMsgType.InjectPanic,
                   jobId,
@@ -277,10 +351,7 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
 
             dispose() {
               disposed = true;
-              for (const pending of pendingJobs.values()) {
-                pending.resolveJob(err('Worker terminato prima del completamento job.'));
-              }
-              pendingJobs.clear();
+              failAllPendingJobs(MANDALA_MESSAGES.wasmWorker.workerTerminatedBeforeDone);
               worker.terminate();
             },
           };
@@ -293,8 +364,8 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
       if (msg.type === WorkerMsgType.Expanded) {
         const pending = pendingJobs.get(msg.jobId);
         if (pending) {
-          pendingJobs.delete(msg.jobId);
-          pending.resolveJob(
+          settlePendingJob(
+            msg.jobId,
             ok({
               kind: 'expand',
               buffer: msg.buffer,
@@ -310,8 +381,8 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
       if (msg.type === WorkerMsgType.LSystemExpanded) {
         const pending = pendingJobs.get(msg.jobId);
         if (pending) {
-          pendingJobs.delete(msg.jobId);
-          pending.resolveJob(
+          settlePendingJob(
+            msg.jobId,
             ok({
               kind: 'lsystem',
               buffer: msg.buffer,
@@ -331,27 +402,38 @@ async function createPersistentWorkerClient(): Promise<Result<WasmWorkerClient, 
         if (!settledInit && msg.jobId === null) {
           settledInit = true;
           clearTimeout(initTimeout);
+          disposed = true;
           worker.terminate();
+          cachedClientPromise = null;
           resolve(err(msg.message));
           return;
         }
         if (msg.jobId !== null) {
-          const pending = pendingJobs.get(msg.jobId);
-          if (pending) {
-            pendingJobs.delete(msg.jobId);
-            pending.resolveJob(err(msg.message));
-          }
+          settlePendingJob(msg.jobId, err(msg.message));
         }
       }
     };
 
     worker.onerror = (ev) => {
-      const msg = ev.message || 'Errore fatale nel Web Worker WASM.';
+      const msg = ev.message || MANDALA_MESSAGES.wasmWorker.fatalWorkerError;
+      disposed = true;
+      failAllPendingJobs(msg);
+      cachedClientPromise = null;
+      reportDiagnostic({
+        severity: DiagnosticSeverity.Error,
+        source: DiagnosticSource.WasmWorker,
+        code: DomainErrorCode.WasmWorkerCrash,
+        message: msg,
+        userNotice: MANDALA_MESSAGES.wasmWorker.fallbackNotice,
+        cause: ev,
+      });
       if (!settledInit) {
         settledInit = true;
         clearTimeout(initTimeout);
         worker.terminate();
         resolve(err(msg));
+      } else {
+        worker.terminate();
       }
     };
 

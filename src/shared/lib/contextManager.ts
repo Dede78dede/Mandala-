@@ -4,10 +4,21 @@
  *
  * Deterministic Context Managers (`try ... finally` RAII-style scopes).
  * Guarantees Canvas state balance, Offscreen backing-store release (64MB at 4K),
- * Object URL revocation, and precise scope timing even if callbacks throw.
+ * ImageBitmap GPU release, Object URL revocation, PointerCapture diagnostics,
+ * LIFO resource scopes, and precise scope timing even if callbacks throw.
  */
 
-import { Result, ok, err } from './result.ts';
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from './diagnostics.ts';
+import { Result, err, ok } from './result.ts';
+
+export interface DisposableResource {
+  dispose(): void;
+}
 
 /**
  * Automatically balances `ctx.save()` and `ctx.restore()`.
@@ -54,7 +65,25 @@ export function withOffscreenCanvas<T>(
 }
 
 /**
- * Scopes a temporary Blob Object URL and revokes it deterministically on exit.
+ * Scopes an ImageBitmap and guarantees `bitmap.close()` on exit (sync or async).
+ */
+export async function withImageBitmap<T>(
+  bitmap: ImageBitmap,
+  fn: (bmp: ImageBitmap) => Promise<T> | T
+): Promise<T> {
+  try {
+    return await fn(bitmap);
+  } finally {
+    try {
+      bitmap.close();
+    } catch {
+      // Bitmap may already be closed by caller transfer
+    }
+  }
+}
+
+/**
+ * Scopes a temporary Blob Object URL and revokes it deterministically on sync exit.
  */
 export function withBlobUrl<T>(blob: Blob, fn: (url: string) => T): T {
   const url = URL.createObjectURL(blob);
@@ -63,6 +92,88 @@ export function withBlobUrl<T>(blob: Blob, fn: (url: string) => T): T {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * Scopes a temporary Blob Object URL across an async operation and revokes it on exit.
+ */
+export async function withBlobUrlAsync<T>(
+  blob: Blob,
+  fn: (url: string) => Promise<T>
+): Promise<T> {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await fn(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Safely acquires DOM pointer capture and emits a discrete diagnostic on rejection
+ * (e.g., synthetic pointers in tests or detached DOM targets).
+ */
+export function safelyAcquirePointerCapture(target: Element, pointerId: number): boolean {
+  if (typeof target.setPointerCapture !== 'function') {
+    return false;
+  }
+  try {
+    target.setPointerCapture(pointerId);
+    return true;
+  } catch (cause) {
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Info,
+      source: DiagnosticSource.Viewport,
+      code: DomainErrorCode.PointerCaptureDenied,
+      message: `setPointerCapture rifiutato per pointerId=${pointerId}.`,
+      cause,
+    });
+    return false;
+  }
+}
+
+/**
+ * Safely releases DOM pointer capture when still held.
+ */
+export function safelyReleasePointerCapture(target: Element, pointerId: number): void {
+  if (typeof target.releasePointerCapture !== 'function') {
+    return;
+  }
+  try {
+    if (typeof target.hasPointerCapture === 'function' && !target.hasPointerCapture(pointerId)) {
+      return;
+    }
+    target.releasePointerCapture(pointerId);
+  } catch {
+    // Pointer may have been implicitly released by the browser before pointerup
+  }
+}
+
+/**
+ * LIFO scope stack mirroring Python's `contextlib.ExitStack`.
+ */
+export function createResourceScope() {
+  const stack: Array<() => void> = [];
+  return {
+    adopt<R extends DisposableResource>(resource: R): R {
+      stack.push(() => resource.dispose());
+      return resource;
+    },
+    defer(cleanup: () => void): void {
+      stack.push(cleanup);
+    },
+    disposeAll(): void {
+      while (stack.length > 0) {
+        const fn = stack.pop();
+        if (!fn) continue;
+        try {
+          fn();
+        } catch {
+          // Isolate teardown exceptions so remaining cleanups execute
+        }
+      }
+    },
+  };
 }
 
 /**

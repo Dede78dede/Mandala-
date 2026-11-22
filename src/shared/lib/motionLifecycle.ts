@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { CpuLoadState, MotionPauseReason } from '../../features/mandala/model/types.ts';
+import { MANDALA_MESSAGES } from '../../features/mandala/model/messages.ts';
 
 export interface MotionExecutionGateInput {
   readonly userRequestedPlay: boolean;
@@ -69,11 +70,11 @@ export function evaluateMotionExecutionGate(
 export function describeMotionPauseReason(reason: MotionPauseReason | null): string | null {
   switch (reason) {
     case MotionPauseReason.ReducedMotion:
-      return 'Animazioni automatiche sospese (prefers-reduced-motion attivo).';
+      return MANDALA_MESSAGES.motion.reducedMotion;
     case MotionPauseReason.TabHidden:
-      return 'Animazione in pausa automatica (scheda in background).';
+      return MANDALA_MESSAGES.motion.tabHidden;
     case MotionPauseReason.CpuProtected:
-      return 'Animazione sospesa dalla protezione CPU Anti-Saturazione.';
+      return MANDALA_MESSAGES.motion.cpuProtected;
     case MotionPauseReason.PausedByUser:
     default:
       return null;
@@ -85,21 +86,29 @@ export function usePrefersReducedMotion(): boolean {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
       return false;
     }
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    try {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false;
+    }
   });
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
       return;
     }
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    setReduced(mq.matches);
+    try {
+      const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+      setReduced(mq.matches);
 
-    const handleChange = (event: MediaQueryListEvent) => {
-      setReduced(event.matches);
-    };
-    mq.addEventListener('change', handleChange);
-    return () => mq.removeEventListener('change', handleChange);
+      const handleChange = (event: MediaQueryListEvent) => {
+        setReduced(event.matches);
+      };
+      mq.addEventListener('change', handleChange);
+      return () => mq.removeEventListener('change', handleChange);
+    } catch {
+      return undefined;
+    }
   }, []);
 
   return reduced;

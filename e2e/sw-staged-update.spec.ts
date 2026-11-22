@@ -22,7 +22,7 @@ const MIME_TYPES: Record<string, string> = {
 function createSwappableDistServer(initialRoot: string) {
   let activeRoot = initialRoot;
   const server = http.createServer((req, res) => {
-    const reqUrl = (req.url ?? '/').split('?')[0];
+    const reqUrl = (req.url ?? '/').split('?')[0] ?? '/';
     const relPath = reqUrl === '/' ? 'index.html' : reqUrl.replace(/^\/+/, '');
     let filePath = path.join(activeRoot, relPath);
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
@@ -151,7 +151,8 @@ test.describe('Phase 5 Staged Service Worker Update E2E (Build A -> Build B)', (
         localStorage.getItem('mandala_studio_doc_v1')
       );
       expect(savedAfterUpdate).toBeTruthy();
-      expect(JSON.parse(savedAfterUpdate!).wedges.length).toBeGreaterThanOrEqual(1);
+      const parsedAfter = JSON.parse(savedAfterUpdate ?? '{}') as { wedges?: unknown[] };
+      expect((parsedAfter.wedges ?? []).length).toBeGreaterThanOrEqual(1);
     } finally {
       await srv.stop();
       fs.rmSync(tmpBase, { recursive: true, force: true });

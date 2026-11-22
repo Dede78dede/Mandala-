@@ -153,7 +153,11 @@ export function resolveDispatchBackendForWedge(
     : ComputeBackend.MainThreadJs;
 }
 
-const EPHEMERAL_PREVIEW_ID = 'preview';
+const EPHEMERAL_STROKE_PREFIXES: readonly string[] = ['morph_', 'stamp_preview'];
+
+function isEphemeralWedgeId(id: string): boolean {
+  return id === 'preview' || EPHEMERAL_STROKE_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
 
 export function createCachedJsGeometryEngine(
   cache: SymmetryLruCache = SHARED_SYMMETRY_CACHE
@@ -162,7 +166,7 @@ export function createCachedJsGeometryEngine(
     backend: ComputeBackend.MainThreadJs,
 
     expandStroke(wedge, params, center = LOGICAL_CENTER) {
-      if (wedge.id === EPHEMERAL_PREVIEW_ID) {
+      if (isEphemeralWedgeId(wedge.id)) {
         return expandStrokeWithStrategy(wedge, params, center);
       }
 

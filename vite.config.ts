@@ -71,7 +71,16 @@ export default defineConfig(() => {
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: false,
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /^\/_gcp/,
+          /^\/__/,
+          /\/\.well-known\//,
+          /update-manifest\.json$/,
+          /\.(?:json|wasm|png|svg|woff2?|apk)$/,
+        ],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,wasm}'],
+        globIgnores: ['**/*.apk', '**/releases/**'],
         runtimeCaching: [
           {
             // Class 1: Immutable / fingerprinted .wasm binaries (Cache-First)
@@ -119,7 +128,7 @@ export default defineConfig(() => {
         ],
       },
       devOptions: {
-        enabled: true,
+        enabled: false,
         type: 'module',
       },
     }),
@@ -155,6 +164,7 @@ export default defineConfig(() => {
   }
 
   return {
+    base: process.env.VITE_PUBLIC_BASE || '/',
     plugins,
     build: {
       assetsInlineLimit: 0,

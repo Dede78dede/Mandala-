@@ -1,0 +1,24 @@
+[package]
+name = "mandala-core"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Shared pure-math symmetry and L-System kernel targeting wasm32 and Android NDK JNI."
+
+[lib]
+name = "mandala_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+android-jni = ["dep:jni"]
+
+[dependencies]
+jni = { version = "0.21.1", optional = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

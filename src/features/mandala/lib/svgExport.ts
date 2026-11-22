@@ -11,6 +11,7 @@ import {
   CANVAS_THEME,
   LOGICAL_CANVAS_SIZE,
   LOGICAL_CENTER,
+  RESOURCE_GUARD_LIMITS,
   SVG_ANIMATION_LIMITS,
   SVG_DEFAULT_EXPORT_SIZE,
 } from '../model/constants.ts';
@@ -23,7 +24,9 @@ import {
   type SymmetryParams,
   type WedgeStroke,
 } from '../model/types.ts';
+import { STRATEGY_REGISTRY } from '../strategies/symmetry.ts';
 import { JsGeometryEngine } from '../engine/geometryEngine.ts';
+import { buildSvgQuadraticPathData } from './curveInterpolation.ts';
 import { partitionWedgesIntoRadialBands } from './kineticMandala.ts';
 
 export const DEFAULT_SVG_PATH_DRAWING_CONFIG: SvgPathDrawingConfig = {
@@ -47,6 +50,21 @@ function resolveSvgAnimationMode(modeOrBool: SvgAnimationMode | boolean): SvgAni
   return modeOrBool;
 }
 
+export function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function sanitizeSvgId(rawId: string): string {
+  const cleaned = rawId.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (cleaned.length === 0) return 'id_0';
+  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `id_${cleaned}`;
+}
+
 function buildStrokeSvgPrimitive(
   s: WedgeStroke,
   scaleX: number,
@@ -59,31 +77,29 @@ function buildStrokeSvgPrimitive(
   if (s.points.length === 0) return '';
   const cxOffset = centered ? LOGICAL_CENTER.x : 0;
   const cyOffset = centered ? LOGICAL_CENTER.y : 0;
-  const idPart = idAttr ? ` id="${idAttr}"` : '';
+  const idPart = idAttr ? ` id="${escapeXmlAttr(sanitizeSvgId(idAttr))}"` : '';
   const isPathDraw = pathDrawingDelayMs !== undefined;
-  const delayAttr = isPathDraw ? ` style="animation-delay: ${pathDrawingDelayMs}ms"` : '';
+  const delayAttr = isPathDraw ? ` style="animation-delay: ${Math.max(0, Math.round(pathDrawingDelayMs))}ms"` : '';
+  const safeStroke = escapeXmlAttr(s.stroke);
+  const safeOpacity = Number.isFinite(s.opacity) ? clamp(s.opacity, 0, 1) : 1;
 
   if (s.points.length === 1) {
-    const cx = ((s.points[0].x - cxOffset) * scaleX).toFixed(2);
-    const cy = ((s.points[0].y - cyOffset) * scaleY).toFixed(2);
+    const pt = s.points[0];
+    if (!pt) return '';
+    const cx = ((pt.x - cxOffset) * scaleX).toFixed(2);
+    const cy = ((pt.y - cyOffset) * scaleY).toFixed(2);
     const r = Math.max(1, (s.strokeWidth * strokeScale) / 2).toFixed(2);
     const classPart = isPathDraw ? ` class="mandala-draw-dot"` : '';
-    return `    <circle${idPart}${classPart} cx="${cx}" cy="${cy}" r="${r}" fill="${s.stroke}" opacity="${s.opacity}"${delayAttr} />`;
+    return `    <circle${idPart}${classPart} cx="${cx}" cy="${cy}" r="${r}" fill="${safeStroke}" opacity="${safeOpacity}"${delayAttr} />`;
   }
 
-  const d = s.points
-    .map((p, idx) => {
-      const px = ((p.x - cxOffset) * scaleX).toFixed(2);
-      const py = ((p.y - cyOffset) * scaleY).toFixed(2);
-      return `${idx === 0 ? 'M' : 'L'} ${px} ${py}`;
-    })
-    .join(' ');
+  const d = buildSvgQuadraticPathData(s.points, cxOffset, cyOffset, scaleX, scaleY);
   const dashAttr =
     !isPathDraw && s.dash
       ? ` stroke-dasharray="${s.dash.map((v) => (v * strokeScale).toFixed(2)).join(',')}"`
       : '';
   const pathLengthPart = isPathDraw ? ` pathLength="1" class="mandala-draw-path"` : '';
-  return `    <path${idPart}${pathLengthPart} d="${d}" fill="none" stroke="${s.stroke}" stroke-width="${(s.strokeWidth * strokeScale).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" opacity="${s.opacity}"${dashAttr}${delayAttr} />`;
+  return `    <path${idPart}${pathLengthPart} d="${d}" fill="none" stroke="${safeStroke}" stroke-width="${(s.strokeWidth * strokeScale).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" opacity="${safeOpacity}"${dashAttr}${delayAttr} />`;
 }
 
 const KINETIC_SVG_STYLE_BLOCK = `  <style>
@@ -134,9 +150,10 @@ function wrapSvg(
 ): string {
   const vx = -(width / 2);
   const vy = -(height / 2);
+  const safeBg = escapeXmlAttr(backgroundColor);
   const bgRect =
     backgroundColor !== CANVAS_THEME.transparentBackground
-      ? `  <rect x="${vx}" y="${vy}" width="${width}" height="${height}" fill="${backgroundColor}" />\n`
+      ? `  <rect x="${vx}" y="${vy}" width="${width}" height="${height}" fill="${safeBg}" />\n`
       : '';
   const defs = defsBlock ? `  <defs>\n${defsBlock}\n  </defs>\n` : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -328,6 +345,47 @@ export function exportToSVGBenchmarked(
     defsUseBytes,
     selectedBytes: absoluteBytes,
   };
+}
+
+export function estimateExpandedSvgPrimitives(
+  wedges: readonly WedgeStroke[],
+  symmetryParams: SymmetryParams
+): number {
+  const strategy = STRATEGY_REGISTRY[symmetryParams.strategyId];
+  const multiplier = Math.max(
+    1,
+    strategy ? strategy.expansionMultiplier(symmetryParams.order) : symmetryParams.order
+  );
+  return wedges.length * multiplier;
+}
+
+/**
+ * Downsamples dense scenes purely for the compact modal SVG live-preview thumbnail
+ * so live vector animation never hangs or OOMs the UI thread while keeping full detail on download.
+ */
+export function sampleWedgesForPreview(
+  wedges: readonly WedgeStroke[],
+  symmetryParams: SymmetryParams,
+  maxExpandedPrimitives: number = RESOURCE_GUARD_LIMITS.svgLivePreviewMaxExpandedPrimitives
+): WedgeStroke[] {
+  if (wedges.length === 0) return [];
+  const strategy = STRATEGY_REGISTRY[symmetryParams.strategyId];
+  const multiplier = Math.max(
+    1,
+    strategy ? strategy.expansionMultiplier(symmetryParams.order) : symmetryParams.order
+  );
+  const maxBaseWedges = Math.max(1, Math.floor(maxExpandedPrimitives / multiplier));
+  if (wedges.length <= maxBaseWedges) {
+    return [...wedges];
+  }
+  const sampled: WedgeStroke[] = [];
+  const step = wedges.length / maxBaseWedges;
+  for (let i = 0; i < maxBaseWedges; i++) {
+    const idx = Math.min(wedges.length - 1, Math.floor(i * step));
+    const wedge = wedges[idx];
+    if (wedge) sampled.push(wedge);
+  }
+  return sampled;
 }
 
 export function exportToSVG(

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "versionName": "1.0.0",
+  "versionCode": 10000,
+  "channel": "github-releases",
+  "flavor": "sideload",
+  "androidPackageId": "com.mandala.studio",
+  "twaPackageId": "com.mandala.studio.twa",
+  "minSdk": 28,
+  "targetSdk": 35,
+  "apkAvailable": false,
+  "apkDownloadUrl": "https://github.com/mandala-studio/mandala-studio/releases/latest/download/mandala-studio-universal-release.apk",
+  "releasePageUrl": "https://github.com/mandala-studio/mandala-studio/releases/latest",
+  "sha256": null,
+  "apkSizeBytes": null,
+  "generatedAt": "2026-11-22T17:38:43Z"
+}

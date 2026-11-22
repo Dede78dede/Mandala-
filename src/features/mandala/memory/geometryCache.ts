@@ -9,11 +9,11 @@
 
 import { registerManagedCache } from '../../../shared/lib/memoCache.ts';
 import { MEMORY_TIER_LIMITS } from '../model/constants.ts';
-import {
-  SymmetryStrategyKind,
-  type Point,
-  type SymmetryParams,
-  type WedgeStroke,
+import { STRATEGY_REGISTRY } from '../strategies/symmetry.ts';
+import type {
+  Point,
+  SymmetryParams,
+  WedgeStroke,
 } from '../model/types.ts';
 
 export interface LruCacheStats {
@@ -44,15 +44,10 @@ export function estimateExpandedStrokesBytes(strokes: readonly WedgeStroke[]): n
 }
 
 export function symmetrySignature(params: SymmetryParams, center: Point): string {
-  const cSig = `${center.x}:${center.y}`;
-  switch (params.strategyId) {
-    case SymmetryStrategyKind.Radial:
-      return `${params.strategyId}|${params.order}|${cSig}`;
-    case SymmetryStrategyKind.MirrorRadial:
-      return `${params.strategyId}|${params.order}|${params.mirrorMode}|${cSig}`;
-    case SymmetryStrategyKind.Fractal:
-      return `${params.strategyId}|${params.order}|${params.preset}|${cSig}`;
-  }
+  const strategy = STRATEGY_REGISTRY[params.strategyId];
+  return strategy
+    ? strategy.buildCacheSignature(params, center)
+    : `${params.strategyId}|${params.order}|${center.x}:${center.y}`;
 }
 
 export function buildSymmetryCacheKey(

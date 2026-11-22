@@ -29,6 +29,25 @@ export function useServiceWorkerUpdate(): ServiceWorkerUpdateState {
       return;
     }
 
+    const isDev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+    if (isDev) {
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) =>
+          Promise.all(
+            regs
+              .filter((r) => {
+                const url =
+                  r.active?.scriptURL ?? r.waiting?.scriptURL ?? r.installing?.scriptURL ?? '';
+                return url.includes('dev-sw.js');
+              })
+              .map((r) => r.unregister())
+          )
+        )
+        .catch(() => undefined);
+      return;
+    }
+
     const triggerSingleReload = () => {
       if (reloadingRef.current) return;
       reloadingRef.current = true;

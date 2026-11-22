@@ -86,13 +86,15 @@ export function partitionWedgesIntoRadialBands(
     });
 
     for (let i = 0; i < wedges.length; i++) {
-      const ratio = radii[i] / maxRadius;
+      const wedge = wedges[i];
+      if (!wedge) continue;
+      const ratio = (radii[i] ?? 0) / maxRadius;
       if (ratio <= KINETIC_LIMITS.innerRingRatio) {
-        inner.push(wedges[i]);
+        inner.push(wedge);
       } else if (ratio <= KINETIC_LIMITS.midRingRatio) {
-        mid.push(wedges[i]);
+        mid.push(wedge);
       } else {
-        outer.push(wedges[i]);
+        outer.push(wedge);
       }
     }
   }
@@ -150,7 +152,8 @@ export function computeStrokeReplaySlice(
   let totalWeight = 0;
   const weights: number[] = new Array(wedges.length);
   for (let i = 0; i < wedges.length; i++) {
-    const w = Math.max(1, wedges[i].points.length);
+    const stroke = wedges[i];
+    const w = Math.max(1, stroke?.points.length ?? 0);
     weights[i] = w;
     totalWeight += w;
   }
@@ -162,7 +165,8 @@ export function computeStrokeReplaySlice(
 
   for (let i = 0; i < wedges.length; i++) {
     const stroke = wedges[i];
-    const w = weights[i];
+    const w = weights[i] ?? 1;
+    if (!stroke) continue;
     const remaining = targetBudget - consumed;
     if (remaining <= 0) break;
 

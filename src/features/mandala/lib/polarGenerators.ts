@@ -237,8 +237,11 @@ export const POLAR_GENERATOR_LIST: readonly PolarGeneratorDescriptor[] = Object.
   POLAR_GENERATOR_REGISTRY
 );
 
-export function resolvePolarGenerator(id: PolarGeneratorId): PolarGeneratorDescriptor {
-  return POLAR_GENERATOR_REGISTRY[id] ?? POLAR_GENERATOR_REGISTRY[PolarGeneratorId.RoseCurve];
+export function resolvePolarGenerator(id: string): PolarGeneratorDescriptor {
+  return (
+    POLAR_GENERATOR_LIST.find((d) => d.id === id) ??
+    POLAR_GENERATOR_REGISTRY[PolarGeneratorId.RoseCurve]
+  );
 }
 
 export function generatePolarHarmonicStrokes(

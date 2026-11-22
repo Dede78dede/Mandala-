@@ -8,7 +8,7 @@
  * Orchestrator dispatch uses STRATEGY_REGISTRY lookup without strategy-specific if-branches.
  */
 
-import { Result, ok, err, assertNever } from '../../../shared/lib/result.ts';
+import { Result, ok, err } from '../../../shared/lib/result.ts';
 import {
   LOGICAL_CENTER,
   MANDALA_LIMITS,
@@ -26,13 +26,17 @@ import {
   type WedgeStroke,
 } from '../model/types.ts';
 import { resolveLSystemPreset, expandLSystem, interpretTurtle } from '../lib/lsystem.ts';
+import { MANDALA_MESSAGES } from '../model/messages.ts';
 
 export interface SymmetryStrategy {
   readonly id: SymmetryStrategyId;
   readonly label: string;
+  readonly displayLabel: string;
   readonly minWedgeComplexity: number;
   readonly complexityMetric: ComplexityMetric;
   expansionMultiplier(order: number): number;
+  buildCacheSignature(params: SymmetryParams, center: Point): string;
+  describe(params: SymmetryParams): string;
   expand(
     wedge: WedgeStroke,
     params: SymmetryParams,
@@ -155,7 +159,7 @@ function validateOrder(order: number): SymmetryError | null {
   if (order < 1 || order > MANDALA_LIMITS.maxOrder || !Number.isInteger(order)) {
     return {
       code: SymmetryErrorCode.InvalidOrder,
-      message: `Ordine simmetria non valido: ${order}`,
+      message: MANDALA_MESSAGES.symmetry.invalidOrder(order),
     };
   }
   return null;
@@ -164,10 +168,17 @@ function validateOrder(order: number): SymmetryError | null {
 export const RadialStrategy: SymmetryStrategy = {
   id: SymmetryStrategyKind.Radial,
   label: 'Radiale Pura',
+  displayLabel: 'Radiale',
   minWedgeComplexity: STRATEGY_COMPLEXITY_THRESHOLDS.radialPoints,
   complexityMetric: ComplexityMetric.Points,
   expansionMultiplier(order) {
     return Math.max(1, order);
+  },
+  buildCacheSignature(params, center) {
+    return `${params.strategyId}|${params.order}|${center.x}:${center.y}`;
+  },
+  describe(params) {
+    return MANDALA_MESSAGES.symmetry.describeRadial(params.order);
   },
   expand(wedge, params, center = LOGICAL_CENTER) {
     const orderError = validateOrder(params.order);
@@ -180,10 +191,25 @@ export const RadialStrategy: SymmetryStrategy = {
 export const MirrorRadialStrategy: SymmetryStrategy = {
   id: SymmetryStrategyKind.MirrorRadial,
   label: 'Radiale Speculare',
+  displayLabel: 'Speculare',
   minWedgeComplexity: STRATEGY_COMPLEXITY_THRESHOLDS.mirrorRadialPoints,
   complexityMetric: ComplexityMetric.Points,
   expansionMultiplier(order) {
     return Math.max(1, order) * 2;
+  },
+  buildCacheSignature(params, center) {
+    const mode =
+      params.strategyId === SymmetryStrategyKind.MirrorRadial
+        ? params.mirrorMode
+        : MirrorMode.Reflect;
+    return `${params.strategyId}|${params.order}|${mode}|${center.x}:${center.y}`;
+  },
+  describe(params) {
+    const mode =
+      params.strategyId === SymmetryStrategyKind.MirrorRadial
+        ? params.mirrorMode
+        : MirrorMode.Reflect;
+    return MANDALA_MESSAGES.symmetry.describeMirror(params.order, mode);
   },
   expand(wedge, params, center = LOGICAL_CENTER) {
     const orderError = validateOrder(params.order);
@@ -204,10 +230,26 @@ export const MirrorRadialStrategy: SymmetryStrategy = {
 export const FractalStrategy: SymmetryStrategy = {
   id: SymmetryStrategyKind.Fractal,
   label: 'Frattale L-System',
+  displayLabel: 'Frattale',
   minWedgeComplexity: STRATEGY_COMPLEXITY_THRESHOLDS.fractalSegments,
   complexityMetric: ComplexityMetric.Segments,
   expansionMultiplier(order) {
     return RadialStrategy.expansionMultiplier(order);
+  },
+  buildCacheSignature(params, center) {
+    const preset =
+      params.strategyId === SymmetryStrategyKind.Fractal ? params.preset : 'default';
+    return `${params.strategyId}|${params.order}|${preset}|${center.x}:${center.y}`;
+  },
+  describe(params) {
+    if (params.strategyId === SymmetryStrategyKind.Fractal) {
+      return MANDALA_MESSAGES.symmetry.describeFractal(
+        params.preset,
+        params.generations,
+        params.order
+      );
+    }
+    return MANDALA_MESSAGES.symmetry.describeRadial(params.order);
   },
   expand(wedge, params, center = LOGICAL_CENTER) {
     return RadialStrategy.expand(wedge, params, center);
@@ -219,6 +261,12 @@ export const STRATEGY_REGISTRY: Readonly<Record<SymmetryStrategyId, SymmetryStra
   [SymmetryStrategyKind.MirrorRadial]: MirrorRadialStrategy,
   [SymmetryStrategyKind.Fractal]: FractalStrategy,
 };
+
+export const SYMMETRY_STRATEGY_LIST: readonly SymmetryStrategy[] = [
+  RadialStrategy,
+  MirrorRadialStrategy,
+  FractalStrategy,
+];
 
 /**
  * Data-driven orchestrator dispatch: zero strategy-specific `if` branches.
@@ -233,7 +281,7 @@ export function expandStrokeWithStrategy(
   if (!strategy) {
     return err({
       code: SymmetryErrorCode.UnknownStrategy,
-      message: 'Strategia di simmetria sconosciuta',
+      message: MANDALA_MESSAGES.symmetry.unknownStrategy,
     });
   }
   return strategy.expand(wedge, params, center);
@@ -246,9 +294,10 @@ export interface FractalGenerationMetrics {
 }
 
 /**
- * Generate procedural L-System fractal strokes and expand via RadialStrategy delegation.
+ * Generates base L-System fractal polylines (1x fold) with segment metrics,
+ * avoiding N^2 duplication when stored alongside active scene symmetry.
  */
-export function generateFractalStrokesWithMetrics(
+export function generateBaseFractalStrokesWithMetrics(
   params: Extract<SymmetryParams, { strategyId: SymmetryStrategyKind.Fractal }>,
   center: Point,
   color: string,
@@ -263,8 +312,9 @@ export function generateFractalStrokesWithMetrics(
     baseSegmentCount += Math.max(0, poly.length - 1);
   }
 
+  const stamp = Date.now();
   const baseStrokes: WedgeStroke[] = polylines.map((pts, idx) => ({
-    id: `fractal_${preset.id}_${Date.now()}_${idx}`,
+    id: `fractal_${preset.id}_${stamp}_${idx}`,
     points: pts,
     stroke: color,
     strokeWidth,
@@ -272,8 +322,25 @@ export function generateFractalStrokesWithMetrics(
     opacity: MANDALA_LIMITS.defaultOpacity,
   }));
 
+  return {
+    strokes: baseStrokes,
+    baseSegmentCount,
+    expandedSegmentCount: baseSegmentCount * RadialStrategy.expansionMultiplier(params.order),
+  };
+}
+
+/**
+ * Generate procedural L-System fractal strokes and expand via RadialStrategy delegation.
+ */
+export function generateFractalStrokesWithMetrics(
+  params: Extract<SymmetryParams, { strategyId: SymmetryStrategyKind.Fractal }>,
+  center: Point,
+  color: string,
+  strokeWidth: number
+): FractalGenerationMetrics {
+  const baseMetrics = generateBaseFractalStrokesWithMetrics(params, center, color, strokeWidth);
   const expandedStrokes: WedgeStroke[] = [];
-  for (const s of baseStrokes) {
+  for (const s of baseMetrics.strokes) {
     const res = RadialStrategy.expand(s, params, center);
     if (res.ok) {
       expandedStrokes.push(...res.value);
@@ -282,8 +349,8 @@ export function generateFractalStrokesWithMetrics(
 
   return {
     strokes: expandedStrokes,
-    baseSegmentCount,
-    expandedSegmentCount: baseSegmentCount * RadialStrategy.expansionMultiplier(params.order),
+    baseSegmentCount: baseMetrics.baseSegmentCount,
+    expandedSegmentCount: baseMetrics.expandedSegmentCount,
   };
 }
 
@@ -296,16 +363,14 @@ export function generateFractalStrokes(
   return generateFractalStrokesWithMetrics(params, center, color, strokeWidth).strokes;
 }
 
-export function describeSymmetryParams(params: SymmetryParams): string {
-  switch (params.strategyId) {
-    case SymmetryStrategyKind.Radial:
-      return `simmetria radiale pura a ${params.order} ordini`;
-    case SymmetryStrategyKind.MirrorRadial:
-      return `simmetria speculare (${params.mirrorMode === MirrorMode.Alternate ? 'alternata' : 'bilaterale'}) a ${params.order} ordini`;
-    case SymmetryStrategyKind.Fractal:
-      return `simmetria frattale L-System (${params.preset}, ${params.generations} gen.) a ${params.order} ordini`;
-    default:
-      return assertNever(params);
+export function describeSymmetryParams(
+  params: SymmetryParams,
+  registry: Readonly<Record<string, SymmetryStrategy>> = STRATEGY_REGISTRY
+): string {
+  const strategy = registry[params.strategyId];
+  if (strategy) {
+    return strategy.describe(params);
   }
+  return MANDALA_MESSAGES.symmetry.unknownStrategy;
 }
 

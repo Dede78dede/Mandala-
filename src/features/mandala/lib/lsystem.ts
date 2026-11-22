@@ -62,8 +62,71 @@ export const L_SYSTEM_PRESETS: Readonly<Record<LSystemPresetId, LSystemPreset>> 
   },
 };
 
-export function resolveLSystemPreset(presetId: LSystemPresetId): LSystemPreset {
-  return L_SYSTEM_PRESETS[presetId] ?? L_SYSTEM_PRESETS[LSystemPresetId.SacredFlower];
+export function resolveLSystemPreset(presetId: string): LSystemPreset {
+  return (
+    Object.values(L_SYSTEM_PRESETS).find((p) => p.id === presetId) ??
+    L_SYSTEM_PRESETS[LSystemPresetId.SacredFlower]
+  );
+}
+
+export interface LSystemComplexityEstimate {
+  readonly instructionLength: number;
+  readonly moveSegments: number;
+  readonly breakCount: number;
+  readonly estimatedPolylines: number;
+}
+
+/**
+ * Estimates L-System grammar size, turtle segments, and polyline count in O(generations * alphabet)
+ * with zero allocations so workload guards can reject excessive fractals pre-flight.
+ */
+export function estimateLSystemComplexity(
+  axiom: string,
+  rules: Readonly<Record<string, string>>,
+  generations: number
+): LSystemComplexityEstimate {
+  let counts = new Map<string, number>();
+  for (let i = 0; i < axiom.length; i++) {
+    const ch = axiom[i];
+    if (!ch) continue;
+    counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  }
+
+  const safeGen = Math.min(Math.max(1, generations), MANDALA_LIMITS.lSystemCapGenerations);
+  for (let g = 0; g < safeGen; g++) {
+    const next = new Map<string, number>();
+    for (const [ch, cnt] of counts.entries()) {
+      const repl = rules[ch] ?? ch;
+      for (let k = 0; k < repl.length; k++) {
+        const rc = repl[k];
+        if (!rc) continue;
+        next.set(rc, (next.get(rc) ?? 0) + cnt);
+      }
+    }
+    counts = next;
+  }
+
+  let instructionLength = 0;
+  let moveSegments = 0;
+  let breakCount = 0;
+  for (const [ch, cnt] of counts.entries()) {
+    instructionLength += cnt;
+    if (ch === 'F' || ch === 'A' || ch === 'B' || ch === 'G') {
+      moveSegments += cnt;
+    } else if (ch === 'f') {
+      moveSegments += cnt;
+      breakCount += cnt;
+    } else if (ch === ']') {
+      breakCount += cnt;
+    }
+  }
+
+  return {
+    instructionLength,
+    moveSegments,
+    breakCount,
+    estimatedPolylines: Math.max(1, breakCount + 1),
+  };
 }
 
 export function expandLSystem(
@@ -77,7 +140,8 @@ export function expandLSystem(
     let next = '';
     for (let i = 0; i < current.length; i++) {
       const char = current[i];
-      next += rules[char] !== undefined ? rules[char] : char;
+      if (!char) continue;
+      next += rules[char] ?? char;
     }
     current = next;
   }

@@ -10,7 +10,14 @@
  */
 
 import { registerGpuTextureReclaimer } from '../../../shared/lib/cacheService.ts';
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from '../../../shared/lib/diagnostics.ts';
 import { KALEIDOSCOPE_LIMITS, LENS_LIMITS } from '../model/constants.ts';
+import { MANDALA_MESSAGES } from '../model/messages.ts';
 import { LensProfile, type LensConfig } from '../model/types.ts';
 import { estimateRgbaTextureBytes, normalizeLensConfig } from './lensProjection.ts';
 
@@ -200,6 +207,14 @@ function compileShader(
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const infoLog = gl.getShaderInfoLog(shader) ?? 'unknown shader error';
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Error,
+      source: DiagnosticSource.WebGL2,
+      code: DomainErrorCode.WebGl2ShaderError,
+      message: `WebGL2 shader compile error: ${infoLog}`,
+      userNotice: MANDALA_MESSAGES.webgl.shaderCompileFailed,
+    });
     gl.deleteShader(shader);
     return null;
   }
@@ -278,11 +293,30 @@ export function createWebGL2LensCompositor(
   gl.deleteShader(fs);
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const linkLog = gl.getProgramInfoLog(program) ?? 'unknown link error';
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Error,
+      source: DiagnosticSource.WebGL2,
+      code: DomainErrorCode.WebGl2ShaderError,
+      message: `WebGL2 program link error: ${linkLog}`,
+      userNotice: MANDALA_MESSAGES.webgl.programLinkFailed,
+    });
     gl.deleteProgram(program);
     return null;
   }
 
   const quadBuffer = gl.createBuffer();
+  if (!quadBuffer) {
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Error,
+      source: DiagnosticSource.WebGL2,
+      code: DomainErrorCode.WebGl2ShaderError,
+      message: MANDALA_MESSAGES.webgl.bufferAllocFailed,
+      userNotice: MANDALA_MESSAGES.webgl.bufferAllocFailed,
+    });
+    gl.deleteProgram(program);
+    return null;
+  }
   gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
   gl.bufferData(
     gl.ARRAY_BUFFER,
@@ -442,6 +476,10 @@ export function renderLensCompositeToPNGDataUrl(
   }
 
   try {
+    const safeDim = Math.max(256, Math.min(clampedOut, compositor.maxTextureSize));
+    if (safeDim !== clampedOut) {
+      compositor.resize(safeDim, safeDim);
+    }
     compositor.uploadSourceCanvas(sourceCanvas);
     compositor.render(lensConfig, includeBackground ? 1.0 : 0.0);
     return outCanvas.toDataURL('image/png');

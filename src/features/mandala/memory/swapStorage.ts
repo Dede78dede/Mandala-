@@ -8,8 +8,15 @@
  */
 
 import { Result, ok, err } from '../../../shared/lib/result.ts';
+import {
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DomainErrorCode,
+  reportDiagnostic,
+} from '../../../shared/lib/diagnostics.ts';
 import { IDB_SWAP_CONFIG } from '../model/constants.ts';
-import { parseMandalaDocument } from '../model/schemas.ts';
+import { MANDALA_MESSAGES } from '../model/messages.ts';
+import { parseColdSwapBatch, parseMandalaDocument } from '../model/schemas.ts';
 import type { MandalaDocument, WedgeStroke } from '../model/types.ts';
 
 export interface ColdSwapBatch {
@@ -34,12 +41,11 @@ export interface SwapStoragePort {
 async function withIndexedDb<T>(
   work: (db: IDBDatabase) => Promise<T>
 ): Promise<Result<T, string>> {
-  if (typeof indexedDB === 'undefined') {
-    return err('IndexedDB non disponibile in questo ambiente.');
-  }
-
   let db: IDBDatabase | null = null;
   try {
+    if (typeof indexedDB === 'undefined' || !indexedDB) {
+      return err(MANDALA_MESSAGES.persistence.indexedDbUnavailable);
+    }
     db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(IDB_SWAP_CONFIG.dbName, IDB_SWAP_CONFIG.dbVersion);
       request.onupgradeneeded = () => {
@@ -59,7 +65,15 @@ async function withIndexedDb<T>(
     const out = await work(db);
     return ok(out);
   } catch (e) {
-    return err(e instanceof Error ? e.message : 'Errore IndexedDB sconosciuto.');
+    const message = e instanceof Error ? e.message : 'Errore IndexedDB sconosciuto.';
+    reportDiagnostic({
+      severity: DiagnosticSeverity.Warning,
+      source: DiagnosticSource.Storage,
+      code: DomainErrorCode.StorageWriteFailed,
+      message,
+      cause: e,
+    });
+    return err(message);
   } finally {
     db?.close();
   }
@@ -114,21 +128,24 @@ export const IndexedDbSwapAdapter: SwapStoragePort = {
   },
 
   async restoreColdBatch(batchId) {
-    return withIndexedDb<ColdSwapBatch | null>(async (db) => {
+    const rawRes = await withIndexedDb<unknown>(async (db) => {
       const tx = db.transaction(IDB_SWAP_CONFIG.coldWedgeStore, 'readonly');
       const store = tx.objectStore(IDB_SWAP_CONFIG.coldWedgeStore);
-      const result: unknown = await runIdbRequest(store.get(batchId));
-      if (!result || typeof result !== 'object') return null;
-      const candidate = result as Partial<ColdSwapBatch>;
-      if (typeof candidate.batchId !== 'string' || !Array.isArray(candidate.wedges)) {
-        return null;
-      }
-      return {
-        batchId: candidate.batchId,
-        wedges: candidate.wedges,
-        savedAt: typeof candidate.savedAt === 'string' ? candidate.savedAt : '',
-      };
+      return runIdbRequest(store.get(batchId));
     });
+    if (!rawRes.ok) return err(rawRes.error);
+    if (rawRes.value === undefined || rawRes.value === null) return ok(null);
+    const parsed = parseColdSwapBatch(rawRes.value);
+    if (!parsed.ok) {
+      reportDiagnostic({
+        severity: DiagnosticSeverity.Warning,
+        source: DiagnosticSource.Storage,
+        code: DomainErrorCode.ValidationFailed,
+        message: parsed.error,
+      });
+      return ok(null);
+    }
+    return ok(parsed.value);
   },
 
   async purgeColdBatch(batchId) {

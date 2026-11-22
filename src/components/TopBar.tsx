@@ -14,6 +14,7 @@ import {
   RefreshCw,
   RotateCcw,
 } from 'lucide-react';
+import { ModalPrefetchKey } from '../features/mandala/model/types.ts';
 import { useMandalaStore } from '../features/mandala/model/store.ts';
 import { MandalaControls } from './MandalaControls.tsx';
 import { AppMenuDropdown } from './AppMenu.tsx';
@@ -22,32 +23,43 @@ import { PWAInstallButton } from '../shared/pwa/PWAInstallButton.tsx';
 interface TopBarProps {
   onOpenExport: () => void;
   onOpenAndroidHub: () => void;
+  onOpenAndroidDownload?: () => void;
   onOpenFractalModal: () => void;
   onOpenMobileOptions: () => void;
-  onPrefetchModal?: (modal: 'fractal' | 'export' | 'hub' | 'mobile') => void;
+  onPrefetchModal?: (modal: ModalPrefetchKey) => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = memo(
   ({
     onOpenExport,
     onOpenAndroidHub,
+    onOpenAndroidDownload,
     onOpenFractalModal,
     onOpenMobileOptions,
     onPrefetchModal,
   }) => {
     const flushCaches = useMandalaStore((s) => s.flushCaches);
     const resetSettings = useMandalaStore((s) => s.resetSettings);
-    const [isDesktop, setIsDesktop] = useState<boolean>(() =>
-      typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true
-    );
+    const [isDesktop, setIsDesktop] = useState<boolean>(() => {
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+      try {
+        return window.matchMedia('(min-width: 1024px)').matches;
+      } catch {
+        return true;
+      }
+    });
 
     useEffect(() => {
       if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-      const mq = window.matchMedia('(min-width: 1024px)');
-      const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
-      setIsDesktop(mq.matches);
-      mq.addEventListener('change', onChange);
-      return () => mq.removeEventListener('change', onChange);
+      try {
+        const mq = window.matchMedia('(min-width: 1024px)');
+        const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+        setIsDesktop(mq.matches);
+        mq.addEventListener('change', onChange);
+        return () => mq.removeEventListener('change', onChange);
+      } catch {
+        return undefined;
+      }
     }, []);
 
     return (
@@ -81,8 +93,8 @@ export const TopBar: React.FC<TopBarProps> = memo(
         <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
           <button
             type="button"
-            onMouseEnter={() => onPrefetchModal?.('mobile')}
-            onFocus={() => onPrefetchModal?.('mobile')}
+            onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.Mobile)}
+            onFocus={() => onPrefetchModal?.(ModalPrefetchKey.Mobile)}
             onClick={onOpenMobileOptions}
             className="lg:hidden min-w-[40px] min-h-[40px] flex items-center justify-center px-2 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition shrink-0"
             title="Opzioni Simmetria, Stile e Manutenzione"
@@ -119,13 +131,14 @@ export const TopBar: React.FC<TopBarProps> = memo(
             onOpenFractalModal={onOpenFractalModal}
             onOpenExport={onOpenExport}
             onOpenAndroidHub={onOpenAndroidHub}
+            onOpenAndroidDownload={onOpenAndroidDownload}
             onPrefetchModal={onPrefetchModal}
           />
 
           <button
             type="button"
-            onMouseEnter={() => onPrefetchModal?.('export')}
-            onFocus={() => onPrefetchModal?.('export')}
+            onMouseEnter={() => onPrefetchModal?.(ModalPrefetchKey.Export)}
+            onFocus={() => onPrefetchModal?.(ModalPrefetchKey.Export)}
             onClick={onOpenExport}
             className="min-h-[40px] flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition shadow-sm whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
             aria-label="Esporta"

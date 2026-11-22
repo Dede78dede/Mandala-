@@ -109,7 +109,7 @@ test('Phase A Spatial Culling: cullStrokesToWorldBounds keeps intersecting strok
 
   const culled = cullStrokesToWorldBounds([inside, farOutside], visible);
   assert.equal(culled.length, 1);
-  assert.equal(culled[0].id, 'in_center');
+  assert.equal(culled[0]?.id, 'in_center');
 });
 
 test('Phase A Schema v1 -> v2 Migration: lossless conversion to origin-centered coordinates and back', () => {
@@ -128,15 +128,15 @@ test('Phase A Schema v1 -> v2 Migration: lossless conversion to origin-centered 
   const v2 = migrateDocumentV1ToV2(v1);
   assert.equal(v2.schemaVersion, 2);
   assert.equal(v2.coordinateOrigin, CoordinateSpaceOrigin.CenteredZero);
-  assert.equal(v2.wedges[0].points[0].x, 220);
-  assert.equal(v2.wedges[0].points[0].y, -220);
+  assert.equal(v2.wedges[0]?.points[0]?.x, 220);
+  assert.equal(v2.wedges[0]?.points[0]?.y, -220);
 
   const validated = parseMandalaDocument(v2);
   assert.equal(validated.ok, true);
   if (validated.ok) {
     const resolved = resolveDocumentToActiveWedges(validated.value);
-    assert.equal(resolved.wedges[0].points[0].x, 620);
-    assert.equal(resolved.wedges[0].points[0].y, 180);
+    assert.equal(resolved.wedges[0]?.points[0]?.x, 620);
+    assert.equal(resolved.wedges[0]?.points[0]?.y, 180);
   }
 });
 

@@ -46,6 +46,7 @@ test('Task 4.1.B: pure L-System grammar expansion & Koch turtle segments compose
 
   const polylines = interpretTurtle('F+F', 10, 90, LOGICAL_CENTER);
   assert.equal(polylines.length, 1);
+  assert.ok(polylines[0] && polylines[0][1]);
   assert.equal(polylines[0].length, 3);
   // First segment went straight up (-10 on Y)
   assert.ok(Math.abs(polylines[0][1].y - (LOGICAL_CENTER.y - 10)) < 1e-6);

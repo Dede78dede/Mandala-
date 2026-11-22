@@ -102,11 +102,17 @@ test('Phase 5 WASM L-System kernel maintains <= 1e-12 geometric parity across al
 
     let maxDelta = 0;
     for (let s = 0; s < jsMetrics.strokes.length; s++) {
-      const jp = jsMetrics.strokes[s].points;
-      const wp = wasmStrokes[s].points;
+      const jsStroke = jsMetrics.strokes[s];
+      const wStroke = wasmStrokes[s];
+      assert.ok(jsStroke && wStroke);
+      const jp = jsStroke.points;
+      const wp = wStroke.points;
       assert.equal(wp.length, jp.length);
       for (let k = 0; k < jp.length; k++) {
-        maxDelta = Math.max(maxDelta, Math.abs(wp[k].x - jp[k].x), Math.abs(wp[k].y - jp[k].y));
+        const jPt = jp[k];
+        const wPt = wp[k];
+        assert.ok(jPt && wPt);
+        maxDelta = Math.max(maxDelta, Math.abs(wPt.x - jPt.x), Math.abs(wPt.y - jPt.y));
       }
     }
 
@@ -147,6 +153,7 @@ test('Phase 5 WASM Sacred Blossom Gen 6 computes well under 50ms and resets line
 
   samples.sort((a, b) => a - b);
   const medianComputeMs = samples[Math.floor(samples.length / 2)];
+  assert.ok(medianComputeMs !== undefined);
   assert.ok(
     medianComputeMs < 50,
     `Expected WASM Sacred Blossom G6 < 50ms, got ${medianComputeMs.toFixed(2)}ms`

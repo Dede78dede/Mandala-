@@ -42,7 +42,15 @@ import {
   computeStrokeReplaySlice,
   partitionWedgesIntoRadialBands,
 } from './kineticMandala.ts';
-import { interpolateStrokeScene } from './morphInterpolator.ts';
+import {
+  interpolatePreparedMorph,
+  interpolateStrokeScene,
+  type PreparedMorphPlan,
+} from './morphInterpolator.ts';
+import {
+  traceQuadraticPolylineFlat,
+  traceQuadraticPolylinePoints,
+} from './curveInterpolation.ts';
 
 interface CommittedSnapshotEntry {
   key: string;
@@ -96,6 +104,7 @@ export function drawStrokeOnContext(
 
     if (stroke.points.length === 1) {
       const pt = stroke.points[0];
+      if (!pt) return;
       c.fillStyle = stroke.stroke;
       c.beginPath();
       c.arc(
@@ -108,6 +117,10 @@ export function drawStrokeOnContext(
       c.fill();
       return;
     }
+
+    const first = stroke.points[0];
+    const last = stroke.points[stroke.points.length - 1];
+    if (!first || !last) return;
 
     c.beginPath();
     c.strokeStyle = stroke.stroke;
@@ -123,21 +136,67 @@ export function drawStrokeOnContext(
       c.setLineDash([]);
     }
 
-    c.moveTo(stroke.points[0].x * coordScale, stroke.points[0].y * coordScale);
-    for (let i = 1; i < stroke.points.length - 1; i++) {
-      const xc = ((stroke.points[i].x + stroke.points[i + 1].x) / 2) * coordScale;
-      const yc = ((stroke.points[i].y + stroke.points[i + 1].y) / 2) * coordScale;
-      c.quadraticCurveTo(
-        stroke.points[i].x * coordScale,
-        stroke.points[i].y * coordScale,
-        xc,
-        yc
-      );
-    }
-
-    const last = stroke.points[stroke.points.length - 1];
-    c.lineTo(last.x * coordScale, last.y * coordScale);
+    traceQuadraticPolylinePoints(c, stroke.points, coordScale);
     c.stroke();
+  });
+}
+
+export interface FlatBufferStrokeStyle {
+  readonly stroke: string;
+  readonly strokeWidth: number;
+  readonly dash: readonly number[] | null;
+  readonly opacity: number;
+}
+
+/**
+ * Draws post-WASM flat Structure-of-Arrays Float64Array geometry directly onto Canvas 2D
+ * without intermediate `{ x, y }` object or `WedgeStroke` array allocations.
+ */
+export function drawFlatBufferOnContext(
+  ctx: CanvasRenderingContext2D,
+  buffer: Float64Array,
+  lengths: Uint32Array,
+  style: FlatBufferStrokeStyle,
+  coordScale: number = 1
+): void {
+  if (lengths.length === 0 || buffer.length === 0) return;
+
+  withCanvasState(ctx, (c) => {
+    c.globalAlpha = style.opacity;
+    c.strokeStyle = style.stroke;
+    c.fillStyle = style.stroke;
+    c.lineWidth = style.strokeWidth * coordScale;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.setLineDash(
+      style.dash && style.dash.length > 0
+        ? coordScale === 1
+          ? [...style.dash]
+          : style.dash.map((seg) => seg * coordScale)
+        : []
+    );
+
+    let floatOffset = 0;
+    const dotRadius = Math.max(1.5, (style.strokeWidth * coordScale) / 2);
+
+    for (let sIdx = 0; sIdx < lengths.length; sIdx++) {
+      const ptCount = lengths[sIdx] ?? 0;
+      if (ptCount <= 0) continue;
+
+      if (ptCount === 1) {
+        const px = (buffer[floatOffset] ?? 0) * coordScale;
+        const py = (buffer[floatOffset + 1] ?? 0) * coordScale;
+        c.beginPath();
+        c.arc(px, py, dotRadius, 0, Math.PI * 2);
+        c.fill();
+      } else {
+        c.beginPath();
+        traceQuadraticPolylineFlat(c, buffer, floatOffset, ptCount, coordScale);
+        c.stroke();
+      }
+
+      floatOffset += ptCount * 2;
+    }
   });
 }
 
@@ -329,22 +388,77 @@ export function renderWorldSceneOnContext(
     camera
   );
 
+  const snapshot = cachedSceneSnapshot;
   if (
-    cachedSceneSnapshot &&
-    cachedSceneSnapshot.key === snapshotKey &&
-    cachedSceneSnapshot.width === targetW &&
-    cachedSceneSnapshot.height === targetH
+    snapshot &&
+    snapshot.key === snapshotKey &&
+    snapshot.width === targetW &&
+    snapshot.height === targetH
   ) {
     withCanvasState(ctx, (c) => {
       c.setTransform(1, 0, 0, 1, 0, 0);
-      c.drawImage(cachedSceneSnapshot!.canvas, 0, 0);
+      c.drawImage(snapshot.canvas, 0, 0);
     });
     recordCpuRenderSample(performance.now() - t0);
     return;
   }
 
   if (forceEscapeHatch) {
-    blitPixelBufferToCanvas(ctx, wedges, symmetryParams, targetW, targetH);
+    if (typeof document !== 'undefined') {
+      if (!cachedSceneSnapshot) {
+        cachedSceneSnapshot = {
+          key: '',
+          canvas: document.createElement('canvas'),
+          width: 0,
+          height: 0,
+        };
+      }
+      const snapCanvas = cachedSceneSnapshot.canvas;
+      if (snapCanvas.width !== targetW || snapCanvas.height !== targetH) {
+        snapCanvas.width = targetW;
+        snapCanvas.height = targetH;
+      }
+      const snapCtx = snapCanvas.getContext('2d');
+      if (snapCtx) {
+        snapCtx.setTransform(1, 0, 0, 1, 0, 0);
+        snapCtx.clearRect(0, 0, targetW, targetH);
+        blitPixelBufferToCanvas(
+          snapCtx,
+          wedges,
+          symmetryParams,
+          targetW,
+          targetH,
+          camera,
+          displaySize,
+          dpr,
+          viewportWidth,
+          viewportHeight
+        );
+        cachedSceneSnapshot.key = snapshotKey;
+        cachedSceneSnapshot.width = targetW;
+        cachedSceneSnapshot.height = targetH;
+
+        withCanvasState(ctx, (c) => {
+          c.setTransform(1, 0, 0, 1, 0, 0);
+          c.drawImage(snapCanvas, 0, 0);
+        });
+        recordCpuRenderSample(performance.now() - t0);
+        return;
+      }
+    }
+
+    blitPixelBufferToCanvas(
+      ctx,
+      wedges,
+      symmetryParams,
+      targetW,
+      targetH,
+      camera,
+      displaySize,
+      dpr,
+      viewportWidth,
+      viewportHeight
+    );
     recordCpuRenderSample(performance.now() - t0);
     return;
   }
@@ -453,6 +567,132 @@ export interface KineticMorphRenderOptions {
   readonly fromStrokes: readonly WedgeStroke[];
   readonly toStrokes: readonly WedgeStroke[];
   readonly morphProgress: number;
+  readonly preparedPlan?: PreparedMorphPlan;
+}
+
+interface CompiledBasePathEntry {
+  readonly path: Path2D;
+  readonly stroke: string;
+  readonly strokeWidth: number;
+  readonly dash: number[] | null;
+  readonly opacity: number;
+}
+
+function buildCompiledPathEntry(stroke: WedgeStroke): CompiledBasePathEntry | null {
+  if (stroke.points.length === 0 || typeof Path2D === 'undefined') return null;
+  const path = new Path2D();
+  if (stroke.points.length === 1) {
+    const pt = stroke.points[0];
+    if (!pt) return null;
+    path.arc(pt.x, pt.y, Math.max(1.5, stroke.strokeWidth / 2), 0, Math.PI * 2);
+  } else {
+    traceQuadraticPolylinePoints(path, stroke.points, 1);
+  }
+  return {
+    path,
+    stroke: stroke.stroke,
+    strokeWidth: stroke.strokeWidth,
+    dash: stroke.dash,
+    opacity: stroke.opacity,
+  };
+}
+
+function drawCompiledMorphBatch(
+  ctx: CanvasRenderingContext2D,
+  entries: readonly CompiledBasePathEntry[],
+  rawStrokes: readonly WedgeStroke[]
+): void {
+  let prevStroke = '';
+  let prevWidth = -1;
+  let prevOpacity = -1;
+  let prevDashSig = '__init__';
+
+  for (let i = 0; i < entries.length; i++) {
+    const item = entries[i];
+    if (!item) continue;
+    const isSinglePoint = rawStrokes[i]?.points.length === 1;
+    if (item.opacity !== prevOpacity) {
+      ctx.globalAlpha = item.opacity;
+      prevOpacity = item.opacity;
+    }
+    if (isSinglePoint) {
+      ctx.fillStyle = item.stroke;
+      ctx.fill(item.path);
+      continue;
+    }
+    if (item.stroke !== prevStroke) {
+      ctx.strokeStyle = item.stroke;
+      prevStroke = item.stroke;
+    }
+    if (item.strokeWidth !== prevWidth) {
+      ctx.lineWidth = item.strokeWidth;
+      prevWidth = item.strokeWidth;
+    }
+    const dashSig = item.dash && item.dash.length > 0 ? item.dash.join(',') : '';
+    if (dashSig !== prevDashSig) {
+      ctx.setLineDash(item.dash && item.dash.length > 0 ? item.dash : []);
+      prevDashSig = dashSig;
+    }
+    ctx.stroke(item.path);
+  }
+}
+
+function drawMorphedSymmetryDirectOnContext(
+  ctx: CanvasRenderingContext2D,
+  baseStrokes: readonly WedgeStroke[],
+  symmetryParams: SymmetryParams,
+  center: Point
+): boolean {
+  if (typeof Path2D === 'undefined') return false;
+
+  const entries: CompiledBasePathEntry[] = [];
+  const keptRaw: WedgeStroke[] = [];
+  for (const s of baseStrokes) {
+    const compiled = buildCompiledPathEntry(s);
+    if (compiled) {
+      entries.push(compiled);
+      keptRaw.push(s);
+    }
+  }
+  if (entries.length === 0) return true;
+
+  const order = Math.max(1, symmetryParams.order);
+  const step = (2 * Math.PI) / order;
+  const isMirror = symmetryParams.strategyId === SymmetryStrategyKind.MirrorRadial;
+  const isAlternate =
+    isMirror && symmetryParams.mirrorMode === MirrorMode.Alternate;
+
+  withCanvasState(ctx, (c) => {
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+
+    for (let i = 0; i < order; i++) {
+      const baseAngle = i * step;
+
+      withCanvasState(c, (foldCtx) => {
+        if (baseAngle !== 0) {
+          foldCtx.translate(center.x, center.y);
+          foldCtx.rotate(baseAngle);
+          foldCtx.translate(-center.x, -center.y);
+        }
+        drawCompiledMorphBatch(foldCtx, entries, keptRaw);
+      });
+
+      if (isMirror) {
+        const mirrorAxis = baseAngle + (isAlternate && i % 2 === 1 ? step / 4 : 0);
+        withCanvasState(c, (mirrorCtx) => {
+          mirrorCtx.translate(center.x, center.y);
+          mirrorCtx.rotate(mirrorAxis);
+          mirrorCtx.scale(1, -1);
+          mirrorCtx.rotate(baseAngle - mirrorAxis);
+          mirrorCtx.translate(-center.x, -center.y);
+          drawCompiledMorphBatch(mirrorCtx, entries, keptRaw);
+        });
+      }
+    }
+  });
+
+  return true;
 }
 
 /**
@@ -488,12 +728,14 @@ export function renderKineticWorldSceneOnContext(
   if (kineticMode === KineticMode.StrokeReplay) {
     activeWedges = computeStrokeReplaySlice(wedges, replayProgress).strokes;
   } else if (kineticMode === KineticMode.Morph && morphOptions) {
-    activeWedges = interpolateStrokeScene(
-      morphOptions.fromStrokes,
-      morphOptions.toStrokes,
-      morphOptions.morphProgress,
-      LOGICAL_CENTER
-    );
+    activeWedges = morphOptions.preparedPlan
+      ? interpolatePreparedMorph(morphOptions.preparedPlan, morphOptions.morphProgress)
+      : interpolateStrokeScene(
+          morphOptions.fromStrokes,
+          morphOptions.toStrokes,
+          morphOptions.morphProgress,
+          LOGICAL_CENTER
+        );
   } else {
     activeWedges = wedges;
   }
@@ -501,6 +743,30 @@ export function renderKineticWorldSceneOnContext(
   if (activeWedges.length === 0) {
     recordCpuRenderSample(performance.now() - t0);
     return;
+  }
+
+  if (kineticMode === KineticMode.Morph) {
+    let renderedDirectly = false;
+    withCanvasState(ctx, (c) => {
+      applyCameraTransformToContext(
+        c,
+        camera,
+        displaySize,
+        dpr,
+        viewportWidth,
+        viewportHeight
+      );
+      renderedDirectly = drawMorphedSymmetryDirectOnContext(
+        c,
+        activeWedges,
+        symmetryParams,
+        LOGICAL_CENTER
+      );
+    });
+    if (renderedDirectly) {
+      recordCpuRenderSample(performance.now() - t0);
+      return;
+    }
   }
 
   const expanded = JsGeometryEngine.expandScene(activeWedges, symmetryParams, LOGICAL_CENTER);

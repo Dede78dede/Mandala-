@@ -15,6 +15,7 @@ import {
   WASM_CONFIG,
 } from '../model/constants.ts';
 import {
+  AdoptedComputePath,
   BenchmarkComplexityLabel,
   GateVerdict,
   MirrorMode,
@@ -60,7 +61,7 @@ function buildSyntheticWedge(pointCount: number): WedgeStroke {
 function percentile(sorted: readonly number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return sorted[idx];
+  return sorted[idx] ?? 0;
 }
 
 export type BenchmarkableStrategy =
@@ -262,19 +263,22 @@ export function runPhase3DualPathBenchmark(
             ? GateVerdict.GreyZone
             : GateVerdict.OptimalJs;
 
-      let adoptedPath: Phase3BenchmarkCell['adoptedPath'] = 'JS';
+      let adoptedPath: AdoptedComputePath = AdoptedComputePath.Js;
       if (jsMedianMs <= MANDALA_LIMITS.wasmGateOptimalMs && wasmMedianMs <= MANDALA_LIMITS.wasmGateOptimalMs) {
-        adoptedPath = 'JS';
+        adoptedPath = AdoptedComputePath.Js;
       } else if (
         jsMedianMs >= MANDALA_LIMITS.wasmGateCandidateMs &&
         speedupRatio >= WASM_CONFIG.adoptionSpeedupRatio
       ) {
-        adoptedPath = 'WASM';
+        adoptedPath = AdoptedComputePath.Wasm;
       } else if (
         jsMedianMs > MANDALA_LIMITS.wasmGateOptimalMs ||
         wasmMedianMs > MANDALA_LIMITS.wasmGateOptimalMs
       ) {
-        adoptedPath = speedupRatio >= WASM_CONFIG.adoptionSpeedupRatio ? 'GREY_ZONE_WASM' : 'GREY_ZONE_JS';
+        adoptedPath =
+          speedupRatio >= WASM_CONFIG.adoptionSpeedupRatio
+            ? AdoptedComputePath.GreyZoneWasm
+            : AdoptedComputePath.GreyZoneJs;
       }
 
       cells.push({
@@ -296,7 +300,9 @@ export function runPhase3DualPathBenchmark(
   }
 
   const firstWasmAdopted = cells.find(
-    (c) => c.adoptedPath === 'WASM' || c.adoptedPath === 'GREY_ZONE_WASM'
+    (c) =>
+      c.adoptedPath === AdoptedComputePath.Wasm ||
+      c.adoptedPath === AdoptedComputePath.GreyZoneWasm
   );
 
   return {

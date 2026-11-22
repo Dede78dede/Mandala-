@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -13,13 +13,17 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'",
     "wasm:build": "python3 scripts/build_wasm.py",
     "wasm:check": "node scripts/ci/check-wasm-budget.mjs",
+    "manifest:build": "python3 scripts/release_manifest.py",
+    "android:sync": "node scripts/sync_android_assets.mjs",
+    "release:setup-help": "python3 scripts/setup_android_release.py --check",
     "bench:update": "npx tsx scripts/ci/run-benchmark-gate.ts --update",
     "bench:gate": "npx tsx scripts/ci/run-benchmark-gate.ts",
     "size:check": "npx size-limit",
     "a11y:exemptions": "node scripts/ci/validate-a11y-exemptions.mjs",
+    "quality:gate": "node scripts/ci/check-code-quality.mjs",
     "lhci:check": "node scripts/ci/run-lighthouse-gate.mjs",
     "e2e": "npx playwright test",
-    "verify:release": "npm run wasm:check && npm test && npm run bench:gate && npm run build:analyze && npm run size:check && npm run a11y:exemptions && npm run e2e && npm run lhci:check"
+    "verify:release": "npm run manifest:build && npm run wasm:check && npm test && npm run bench:gate && npm run build:analyze && npm run size:check && npm run a11y:exemptions && npm run e2e && npm run lhci:check"
   },
   "dependencies": {
     "@axe-core/playwright": "^4.14.0",

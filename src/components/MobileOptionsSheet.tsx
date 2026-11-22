@@ -21,6 +21,7 @@ export const MobileOptionsSheet: React.FC<MobileOptionsSheetProps> = ({
   onOpenFractalModal,
   onOpenExport,
   onOpenAndroidHub,
+  onOpenAndroidDownload,
   onPrefetchModal,
 }) => {
   if (!isOpen) return null;
@@ -64,6 +65,7 @@ export const MobileOptionsSheet: React.FC<MobileOptionsSheetProps> = ({
             onOpenFractalModal={onOpenFractalModal}
             onOpenExport={onOpenExport}
             onOpenAndroidHub={onOpenAndroidHub}
+            onOpenAndroidDownload={onOpenAndroidDownload}
             onPrefetchModal={onPrefetchModal}
             onItemComplete={onClose}
           />

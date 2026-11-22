@@ -44,13 +44,18 @@ export function strokeIntersectsCircle(
   const thresholdSq = threshold * threshold;
 
   if (stroke.points.length === 1) {
-    const dx = eraserPt.x - stroke.points[0].x;
-    const dy = eraserPt.y - stroke.points[0].y;
+    const first = stroke.points[0];
+    if (!first) return false;
+    const dx = eraserPt.x - first.x;
+    const dy = eraserPt.y - first.y;
     return dx * dx + dy * dy <= thresholdSq;
   }
 
   for (let i = 0; i < stroke.points.length - 1; i++) {
-    if (distSqPointToSegment(eraserPt, stroke.points[i], stroke.points[i + 1]) <= thresholdSq) {
+    const a = stroke.points[i];
+    const b = stroke.points[i + 1];
+    if (!a || !b) continue;
+    if (distSqPointToSegment(eraserPt, a, b) <= thresholdSq) {
       return true;
     }
   }

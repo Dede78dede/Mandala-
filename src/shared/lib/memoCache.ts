@@ -122,7 +122,7 @@ export function createBoundedMemoizer<Args extends readonly unknown[], R>(
     getEntryCount: () => map.size,
   });
 
-  const wrapped = ((...args: Args): R => {
+  const callFn = (...args: Args): R => {
     const key = keyFn(...args);
     const now = Date.now();
     const existing = map.get(key);
@@ -150,19 +150,21 @@ export function createBoundedMemoizer<Args extends readonly unknown[], R>(
     }
 
     return computed;
-  }) as MemoizedFunction<Args, R>;
-
-  wrapped.clear = () => {
-    clear();
   };
-  wrapped.trimToRatio = trimToRatio;
-  wrapped.getStats = () => ({
-    name: options.name,
-    entries: map.size,
-    maxEntries,
-    hits,
-    misses,
-    evictions,
+
+  const wrapped: MemoizedFunction<Args, R> = Object.assign(callFn, {
+    clear: () => {
+      clear();
+    },
+    trimToRatio,
+    getStats: (): BoundedMemoizerStats => ({
+      name: options.name,
+      entries: map.size,
+      maxEntries,
+      hits,
+      misses,
+      evictions,
+    }),
   });
 
   return wrapped;

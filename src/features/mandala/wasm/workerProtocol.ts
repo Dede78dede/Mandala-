@@ -37,6 +37,7 @@ export type WorkerInboundMessage =
       readonly order: number;
       readonly cx: number;
       readonly cy: number;
+      readonly baseOnly?: boolean;
     }
   | {
       readonly type: WorkerMsgType.InjectPanic;

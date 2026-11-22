@@ -28,9 +28,12 @@ interface RgbaColor {
 function parseHexColor(hex: string): RgbaColor {
   const clean = hex.trim().replace('#', '');
   if (clean.length === 3) {
-    const r = parseInt(clean[0] + clean[0], 16) || 0;
-    const g = parseInt(clean[1] + clean[1], 16) || 0;
-    const b = parseInt(clean[2] + clean[2], 16) || 0;
+    const c0 = clean[0] ?? '0';
+    const c1 = clean[1] ?? '0';
+    const c2 = clean[2] ?? '0';
+    const r = parseInt(c0 + c0, 16) || 0;
+    const g = parseInt(c1 + c1, 16) || 0;
+    const b = parseInt(c2 + c2, 16) || 0;
     return { r, g, b, a: 1 };
   }
   if (clean.length === 6) {
@@ -82,36 +85,40 @@ export function resamplePolylineUniform(
   targetCount: number = MORPH_LIMITS.resampledPointCount
 ): Point[] {
   const safeCount = Math.max(2, Math.round(targetCount));
-  if (points.length === 0) return [];
+  const firstPt = points[0];
+  if (!firstPt) return [];
   if (points.length === 1) {
-    return Array.from({ length: safeCount }, () => ({ x: points[0].x, y: points[0].y }));
+    return Array.from({ length: safeCount }, () => ({ x: firstPt.x, y: firstPt.y }));
   }
 
   const cumulative: number[] = [0];
   let totalLen = 0;
   for (let i = 1; i < points.length; i++) {
-    const segLen = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    const prev = points[i - 1];
+    const curr = points[i];
+    if (!prev || !curr) continue;
+    const segLen = Math.hypot(curr.x - prev.x, curr.y - prev.y);
     totalLen += segLen;
     cumulative.push(totalLen);
   }
 
   if (totalLen < 1e-6) {
-    return Array.from({ length: safeCount }, () => ({ x: points[0].x, y: points[0].y }));
+    return Array.from({ length: safeCount }, () => ({ x: firstPt.x, y: firstPt.y }));
   }
 
   const out: Point[] = [];
   let segIdx = 0;
   for (let i = 0; i < safeCount; i++) {
     const targetDist = (i / (safeCount - 1)) * totalLen;
-    while (segIdx < cumulative.length - 2 && cumulative[segIdx + 1] < targetDist) {
+    while (segIdx < cumulative.length - 2 && (cumulative[segIdx + 1] ?? 0) < targetDist) {
       segIdx += 1;
     }
-    const segStart = cumulative[segIdx];
-    const segEnd = cumulative[segIdx + 1];
+    const segStart = cumulative[segIdx] ?? 0;
+    const segEnd = cumulative[segIdx + 1] ?? segStart;
     const span = segEnd - segStart;
     const localT = span > 1e-6 ? clamp((targetDist - segStart) / span, 0, 1) : 0;
-    const a = points[segIdx];
-    const b = points[segIdx + 1];
+    const a = points[segIdx] ?? firstPt;
+    const b = points[segIdx + 1] ?? a;
     out.push({
       x: lerp(a.x, b.x, localT),
       y: lerp(a.y, b.y, localT),
@@ -126,6 +133,151 @@ function buildCollapsedStroke(centroid: Point, template: WedgeStroke, pointCount
     points: Array.from({ length: pointCount }, () => ({ x: centroid.x, y: centroid.y })),
     opacity: 0,
   };
+}
+
+export interface PreparedMorphPair {
+  readonly index: number;
+  readonly fromPoints: readonly Point[];
+  readonly toPoints: readonly Point[];
+  readonly fromColor: RgbaColor;
+  readonly toColor: RgbaColor;
+  readonly fromWidth: number;
+  readonly toWidth: number;
+  readonly fromDash: number[] | null;
+  readonly toDash: number[] | null;
+  readonly fromOpacity: number;
+  readonly toOpacity: number;
+}
+
+export interface PreparedMorphPlan {
+  readonly fromStrokes: readonly WedgeStroke[];
+  readonly toStrokes: readonly WedgeStroke[];
+  readonly pairs: readonly PreparedMorphPair[];
+}
+
+function buildMorphStrokeList(
+  strokes: readonly WedgeStroke[],
+  maxCount: number
+): readonly WedgeStroke[] {
+  if (strokes.length <= maxCount) return strokes;
+  const sampled: WedgeStroke[] = [];
+  const step = strokes.length / maxCount;
+  for (let i = 0; i < maxCount; i++) {
+    const idx = Math.min(strokes.length - 1, Math.floor(i * step));
+    const item = strokes[idx];
+    if (item) sampled.push(item);
+  }
+  return sampled;
+}
+
+/**
+ * Pre-resamples uniform arc-length endpoint pairs once per scene change so the
+ * 60fps Canvas 2D rAF loop performs zero per-frame arc-length resampling.
+ */
+export function prepareMorphPlan(
+  fromStrokes: readonly WedgeStroke[],
+  toStrokes: readonly WedgeStroke[],
+  center: Point = LOGICAL_CENTER,
+  pointsPerStroke: number = MORPH_LIMITS.resampledPointCount,
+  maxMorphStrokes: number = MORPH_LIMITS.maxPreviewStrokes
+): PreparedMorphPlan {
+  const safeCap = Math.max(1, Math.min(MORPH_LIMITS.maxPreviewStrokes, Math.round(maxMorphStrokes)));
+  const boundedFrom = buildMorphStrokeList(fromStrokes, safeCap);
+  const boundedTo = buildMorphStrokeList(toStrokes, safeCap);
+  const maxLen = Math.max(boundedFrom.length, boundedTo.length);
+  const pairs: PreparedMorphPair[] = [];
+
+  for (let i = 0; i < maxLen; i++) {
+    const rawFrom = boundedFrom[i];
+    const rawTo = boundedTo[i];
+
+    let src: WedgeStroke;
+    let dst: WedgeStroke;
+    if (rawFrom && rawTo) {
+      src = rawFrom;
+      dst = rawTo;
+    } else if (rawTo) {
+      src = buildCollapsedStroke(computeStrokeCentroid(rawTo, center), rawTo, pointsPerStroke);
+      dst = rawTo;
+    } else if (rawFrom) {
+      src = rawFrom;
+      dst = buildCollapsedStroke(computeStrokeCentroid(rawFrom, center), rawFrom, pointsPerStroke);
+    } else {
+      continue;
+    }
+
+    const ptsA = resamplePolylineUniform(src.points, pointsPerStroke);
+    const ptsB = resamplePolylineUniform(dst.points, pointsPerStroke);
+    const count = Math.min(ptsA.length, ptsB.length);
+    if (count === 0) continue;
+
+    pairs.push({
+      index: i,
+      fromPoints: ptsA.length === count ? ptsA : ptsA.slice(0, count),
+      toPoints: ptsB.length === count ? ptsB : ptsB.slice(0, count),
+      fromColor: parseHexColor(src.stroke),
+      toColor: parseHexColor(dst.stroke),
+      fromWidth: src.strokeWidth,
+      toWidth: dst.strokeWidth,
+      fromDash: src.dash,
+      toDash: dst.dash,
+      fromOpacity: src.opacity,
+      toOpacity: dst.opacity,
+    });
+  }
+
+  return {
+    fromStrokes: boundedFrom,
+    toStrokes: boundedTo,
+    pairs,
+  };
+}
+
+/**
+ * Evaluates a pre-computed morph plan at normalized progress `t in [0, 1]`.
+ */
+export function interpolatePreparedMorph(
+  plan: PreparedMorphPlan,
+  progress: number
+): WedgeStroke[] {
+  const t = clamp(progress, 0, 1);
+  if (plan.fromStrokes.length === 0 && plan.toStrokes.length === 0) return [];
+  if (t <= 0) return [...plan.fromStrokes];
+  if (t >= 1) return [...plan.toStrokes];
+
+  const eased = t * t * (3 - 2 * t);
+  const out: WedgeStroke[] = [];
+
+  for (let i = 0; i < plan.pairs.length; i++) {
+    const pair = plan.pairs[i];
+    if (!pair) continue;
+    const count = pair.fromPoints.length;
+    const morphedPts: Point[] = [];
+    for (let k = 0; k < count; k++) {
+      const a = pair.fromPoints[k];
+      const b = pair.toPoints[k];
+      if (!a || !b) continue;
+      morphedPts.push({
+        x: lerp(a.x, b.x, eased),
+        y: lerp(a.y, b.y, eased),
+      });
+    }
+
+    const r = lerp(pair.fromColor.r, pair.toColor.r, eased);
+    const g = lerp(pair.fromColor.g, pair.toColor.g, eased);
+    const b = lerp(pair.fromColor.b, pair.toColor.b, eased);
+
+    out.push({
+      id: `morph_${pair.index}`,
+      points: morphedPts,
+      stroke: `#${toHexByte(r)}${toHexByte(g)}${toHexByte(b)}`,
+      strokeWidth: Number(lerp(pair.fromWidth, pair.toWidth, eased).toFixed(2)),
+      dash: eased < 0.5 ? pair.fromDash : pair.toDash,
+      opacity: Number(clamp(lerp(pair.fromOpacity, pair.toOpacity, eased), 0, 1).toFixed(3)),
+    });
+  }
+
+  return out;
 }
 
 /**
@@ -143,54 +295,12 @@ export function interpolateStrokeScene(
   if (t <= 0) return [...fromStrokes];
   if (t >= 1) return [...toStrokes];
 
-  const eased = t * t * (3 - 2 * t);
-  const maxLen = Math.min(
-    MORPH_LIMITS.maxPreviewStrokes,
-    Math.max(fromStrokes.length, toStrokes.length)
+  const plan = prepareMorphPlan(
+    fromStrokes,
+    toStrokes,
+    center,
+    pointsPerStroke,
+    MORPH_LIMITS.maxPreviewStrokes
   );
-  const out: WedgeStroke[] = [];
-
-  for (let i = 0; i < maxLen; i++) {
-    const rawFrom = fromStrokes[i];
-    const rawTo = toStrokes[i];
-
-    const src =
-      rawFrom ??
-      buildCollapsedStroke(
-        rawTo ? computeStrokeCentroid(rawTo, center) : center,
-        rawTo!,
-        pointsPerStroke
-      );
-    const dst =
-      rawTo ??
-      buildCollapsedStroke(
-        rawFrom ? computeStrokeCentroid(rawFrom, center) : center,
-        rawFrom!,
-        pointsPerStroke
-      );
-
-    const ptsA = resamplePolylineUniform(src.points, pointsPerStroke);
-    const ptsB = resamplePolylineUniform(dst.points, pointsPerStroke);
-    const count = Math.min(ptsA.length, ptsB.length);
-    if (count === 0) continue;
-
-    const morphedPts: Point[] = new Array(count);
-    for (let k = 0; k < count; k++) {
-      morphedPts[k] = {
-        x: lerp(ptsA[k].x, ptsB[k].x, eased),
-        y: lerp(ptsA[k].y, ptsB[k].y, eased),
-      };
-    }
-
-    out.push({
-      id: `morph_${i}`,
-      points: morphedPts,
-      stroke: interpolateHexColor(src.stroke, dst.stroke, eased),
-      strokeWidth: Number(lerp(src.strokeWidth, dst.strokeWidth, eased).toFixed(2)),
-      dash: eased < 0.5 ? src.dash : dst.dash,
-      opacity: Number(clamp(lerp(src.opacity, dst.opacity, eased), 0, 1).toFixed(3)),
-    });
-  }
-
-  return out;
+  return interpolatePreparedMorph(plan, t);
 }

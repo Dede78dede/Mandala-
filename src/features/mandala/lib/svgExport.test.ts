@@ -59,3 +59,31 @@ test('exportToSVG: renders single-point strokes as centered SVG <circle> element
   assert.ok(svg.includes('cx="0.00"'));
   assert.ok(svg.includes('cy="-200.00"'));
 });
+
+test('exportToSVG: emits midpoint quadratic Bezier Q commands and escapes unsafe XML attributes', () => {
+  const curveStroke: WedgeStroke = {
+    id: 'curve_test',
+    points: [
+      { x: 400, y: 200 },
+      { x: 440, y: 260 },
+      { x: 480, y: 220 },
+      { x: 520, y: 300 },
+    ],
+    stroke: '#56B4E9" onclick="alert(1)',
+    strokeWidth: 4,
+    dash: null,
+    opacity: 1,
+  };
+
+  const svg = exportToSVG(
+    [curveStroke],
+    { strategyId: SymmetryStrategyKind.Radial, order: 4 },
+    800,
+    800,
+    '#090d16'
+  );
+
+  assert.ok(svg.includes(' Q '), 'SVG should emit quadratic Bezier Q commands matching Canvas 2D');
+  assert.ok(!svg.includes('onclick="alert(1)"'), 'Unsafe quote attributes must be XML-escaped');
+  assert.ok(svg.includes('&quot;'));
+});
